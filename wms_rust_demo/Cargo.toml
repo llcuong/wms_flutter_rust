@@ -1,0 +1,32 @@
+[package]
+name = "wms_rust_demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# SQL Server driver
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls", "chrono"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+bb8 = "0.8"
+bb8-tiberius = "0.15"
+
+# Date and Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Environment
+dotenvy = "0.15"
+
+# Tower for middleware
+tower-http = { version = "0.6", features = ["cors", "trace"] }
