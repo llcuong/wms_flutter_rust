@@ -1784,7 +1784,7 @@ async fn handle_stockin_save(
             .flatten()
             .unwrap_or(0);
 
-        // Calculate used_day = most_batch_used_day + (today - stockout_date).days + 10
+        // Calculate used_day = most_batch_used_day + (today - stockout_date).days
         let stockout_date = row
             .try_get::<chrono::NaiveDate, _>("stockout_date")
             .ok()
@@ -1792,7 +1792,7 @@ async fn handle_stockin_save(
         let days_diff = stockout_date
             .map(|d| (chrono::Local::now().date_naive() - d).num_days() as i32)
             .unwrap_or(0);
-        let calculated_used_day = most_used_day + days_diff + 10;
+        let calculated_used_day = most_used_day + days_diff;
 
         (batch, calculated_used_day)
     };
