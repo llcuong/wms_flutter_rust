@@ -365,7 +365,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
     final pendingItem = ScannedItem(
       id: tagId,
-      quantity: quantity,
+      quantity: 0,
       vendor: '',
       bin: '',
       status: ItemStatus.pending,
@@ -433,6 +433,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
           existingItem.status = ItemStatus.success;
           existingItem.vendor = basketData.basketVendor;
           existingItem.basketData = basketData;
+          existingItem.quantity = quantity;
         } else {
           existingItem.status = ItemStatus.error;
           existingItem.quantity = 0;
