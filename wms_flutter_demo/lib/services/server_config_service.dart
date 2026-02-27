@@ -6,7 +6,7 @@ class ServerConfigService {
   static const String _keyServerPort = 'server_port';
   
   // Default values
-  static const String defaultIp = '172.18.55.215';
+  static const String defaultIp = '172.18.55.218';
   static const String defaultPort = '40000';
   
   // Cached values

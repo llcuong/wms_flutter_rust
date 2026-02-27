@@ -687,105 +687,105 @@ class _RfidScannedItemsModalState extends State<RfidScannedItemsModal> with Sing
                 ],
               ],
             ),
-            if (item.status == ItemStatus.success && item.bin.isNotEmpty)
-              Column(
-                children: [
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.slate50,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.slate200),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.warehouse,
-                          size: 20,
-                          color: AppColors.textSecondary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'BIN LOCATION',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textSecondary,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                item.bin,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () => _showBinLocationSelector(item),
-                          style: TextButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: const Text(
-                            'CHANGE',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              )
-            else if (item.status == ItemStatus.success)
-              Column(
-                children: [
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () => _showBinLocationSelector(item),
-                      icon: const Icon(Icons.warehouse, size: 18),
-                      label: const Text(
-                        'SELECT BIN LOCATION',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+            // if (item.status == ItemStatus.success && item.bin.isNotEmpty)
+            //   Column(
+            //     children: [
+            //       const SizedBox(height: 12),
+            //       Container(
+            //         padding: const EdgeInsets.all(12),
+            //         decoration: BoxDecoration(
+            //           color: AppColors.slate50,
+            //           borderRadius: BorderRadius.circular(12),
+            //           border: Border.all(color: AppColors.slate200),
+            //         ),
+            //         child: Row(
+            //           children: [
+            //             const Icon(
+            //               Icons.warehouse,
+            //               size: 20,
+            //               color: AppColors.textSecondary,
+            //             ),
+            //             const SizedBox(width: 8),
+            //             Expanded(
+            //               child: Column(
+            //                 crossAxisAlignment: CrossAxisAlignment.start,
+            //                 children: [
+            //                   const Text(
+            //                     'BIN LOCATION',
+            //                     style: TextStyle(
+            //                       fontSize: 10,
+            //                       fontWeight: FontWeight.w700,
+            //                       color: AppColors.textSecondary,
+            //                       letterSpacing: 0.5,
+            //                     ),
+            //                   ),
+            //                   const SizedBox(height: 2),
+            //                   Text(
+            //                     item.bin,
+            //                     style: const TextStyle(
+            //                       fontSize: 14,
+            //                       fontWeight: FontWeight.w700,
+            //                       color: AppColors.textPrimary,
+            //                     ),
+            //                   ),
+            //                 ],
+            //               ),
+            //             ),
+            //             TextButton(
+            //               onPressed: () => _showBinLocationSelector(item),
+            //               style: TextButton.styleFrom(
+            //                 backgroundColor: AppColors.primary,
+            //                 foregroundColor: Colors.white,
+            //                 padding: const EdgeInsets.symmetric(
+            //                   horizontal: 12,
+            //                   vertical: 6,
+            //                 ),
+            //                 shape: RoundedRectangleBorder(
+            //                   borderRadius: BorderRadius.circular(8),
+            //                 ),
+            //               ),
+            //               child: const Text(
+            //                 'CHANGE',
+            //                 style: TextStyle(
+            //                   fontSize: 11,
+            //                   fontWeight: FontWeight.w700,
+            //                 ),
+            //               ),
+            //             ),
+            //           ],
+            //         ),
+            //       ),
+            //     ],
+            //   )
+            // else if (item.status == ItemStatus.success)
+            //   Column(
+            //     children: [
+            //       const SizedBox(height: 12),
+            //       SizedBox(
+            //         width: double.infinity,
+            //         child: ElevatedButton.icon(
+            //           onPressed: () => _showBinLocationSelector(item),
+            //           icon: const Icon(Icons.warehouse, size: 18),
+            //           label: const Text(
+            //             'SELECT BIN LOCATION',
+            //             style: TextStyle(
+            //               fontSize: 13,
+            //               fontWeight: FontWeight.w700,
+            //             ),
+            //           ),
+            //           style: ElevatedButton.styleFrom(
+            //             backgroundColor: AppColors.primary,
+            //             foregroundColor: Colors.white,
+            //             elevation: 0,
+            //             padding: const EdgeInsets.symmetric(vertical: 10),
+            //             shape: RoundedRectangleBorder(
+            //               borderRadius: BorderRadius.circular(12),
+            //             ),
+            //           ),
+            //         ),
+            //       ),
+            //     ],
+            //   ),
           ],
         ),
       ),

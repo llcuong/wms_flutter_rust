@@ -110,6 +110,22 @@ class FormerMasterDataProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void restoreCache({
+    required List<Rack> racks,
+    required Set<String> tagIds,
+  }) {
+    _racks
+      ..clear()
+      ..addAll(racks);
+
+    _allRackTagIds
+      ..clear()
+      ..addAll(tagIds);
+
+    notifyListeners();
+  }
+
+
   Future<void> saveBatch(Map<String, dynamic> masterInfo, String batchNo) async {
     // Construct payload
     final racksData = _racks.map((rack) {

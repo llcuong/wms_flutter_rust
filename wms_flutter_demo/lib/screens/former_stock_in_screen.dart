@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/custom_card.dart';
 import '../components/common/app_modal.dart';
@@ -42,7 +44,8 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
   bool _isLoadingForms = false;
 
   final Map<String, ScannedItem> _scannedItemsMap = {};
-  List<ScannedItem> get scannedItems => _scannedItemsMap.values.toList();
+  List<ScannedItem> get scannedItems =>
+      _scannedItemsMap.values.toList().reversed.toList();
 
   StreamSubscription<TagData>? _tagSubscription;
   StreamSubscription<ConnectionStatus>? _statusSubscription;
@@ -277,11 +280,17 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
     if (selectedQty == null) return;
 
     try {
-      final basketData = await ApiService.getBasketData(tagData.tagId);
+      final raw = await ApiService.getBasketsStockInBatch([tagData.tagId]);
 
-      if (basketData == null) {
+      _singleTagCaptured = false;
+
+      if (raw.isEmpty) {
+        _showError('Scanned failed', "No basket data found for tag ${tagData.tagId}");
+        print("No basket data found for tag ${tagData.tagId}");
         return;
       }
+
+      final basketData = raw.first;
 
       setState(() {
         _scannedItemsMap[tagData.tagId] = ScannedItem(
@@ -294,8 +303,11 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
           basketData: basketData,
         );
       });
+
+
     } catch (e) {
       // Ignore error tags instead of showing failed status
+      _singleTagCaptured = false;
       print('Single scan fetch error: $e');
     }
   }
@@ -471,6 +483,57 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
     }
   }
 
+  String get _rackCacheKey {
+    return 'stockin_${_selectedMachine}_rack_temp';
+  }
+
+  Future<void> _saveRackCache() async {
+    if (_selectedMachine == null) return;
+    final prefs = await SharedPreferences.getInstance();
+
+    final data = {
+      'racks': _racks.map((e) => e.toJson()).toList(),
+      'allRackTagIds': _allRackTagIds.toList(),
+    };
+
+    await prefs.setString(_rackCacheKey, jsonEncode(data));
+  }
+
+  Future<void> _restoreRackCache() async {
+    if (_selectedMachine == null) return;
+
+    setState(() {
+      _racks.clear();
+      _allRackTagIds.clear();
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+
+    print('Restoring rack cache with key: $_rackCacheKey');
+
+    final raw = prefs.getString(_rackCacheKey);
+    if (raw == null) return;
+
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+
+    final restoredRacks = (decoded['racks'] as List)
+        .map((e) => Rack.fromJson(e))
+        .toList();
+
+    final restoredTagIds = Set<String>.from(
+      decoded['allRackTagIds'] ?? const [],
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _racks.addAll(restoredRacks);
+      _allRackTagIds.addAll(restoredTagIds);
+    });
+  }
+
+  AreaData? _lastSelectedArea;
+
   Future<void> _addCurrentScannedToRack() async {
     if (_scannedItemsMap.isEmpty) {
       _showWarning('Empty', 'No scanned items to add');
@@ -478,22 +541,32 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
     }
 
     // Show bin selection modal first (same as former master data)
-    final selectedBinData = await showDialog<BinData>(
+    final selectedArea = await showDialog<AreaData>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Dialog(
-        child: BinSelectionModal(),
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: BinSelectionModal(
+          lastSelected: _lastSelectedArea, // optional
+          incomingQty: _scannedItemsMap.length,
+          rackData: _racks,
+          currentScannedItems: _scannedItemsMap,
+        ),
       ),
     );
 
-    if (selectedBinData == null) {
-      return; // User cancelled
-    }
+    if (selectedArea == null) return;
+
+    setState(() {
+      _lastSelectedArea = selectedArea;
+    });
 
     // Update all items with selected bin
     setState(() {
       for (final item in _scannedItemsMap.values) {
-        item.bin = selectedBinData.binId;
+        item.bin = selectedArea.name;
       }
     });
 
@@ -501,7 +574,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
       context: context,
       title: 'Add to Rack',
       message:
-          'Add ${_scannedItemsMap.length} items to Rack ${currentRackNo}?\n\nBin: ${selectedBinData.binId}',
+          'Add ${_scannedItemsMap.length} items to Rack $currentRackNo?\n\nBin: ${selectedArea.name}',
     );
 
     if (confirm != true) return;
@@ -511,9 +584,9 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
         Rack(
           rackNo: currentRackNo,
           items: _scannedItemsMap.values
-              .map((e) => e)
+              .where((e) => e.status == ItemStatus.success)
               .toList(),
-          bin: selectedBinData.binId,
+          bin: selectedArea.name,
         ),
       );
 
@@ -521,6 +594,8 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
 
       _scannedItemsMap.clear();
     });
+
+    await _saveRackCache();
 
     AppModal.showSuccess(
       context: context,
@@ -587,7 +662,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
       backgroundColor: Colors.white.withOpacity(0.8),
       elevation: 0,
       leading: IconButton(
-        icon: const Icon(Icons.menu, color: AppColors.textSecondary),
+        icon: const Icon(Icons.chevron_left, color: AppColors.textSecondary),
         onPressed: () => Navigator.pop(context),
       ),
       title: Row(
@@ -674,13 +749,14 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
                         ),
                       );
                     }).toList(),
-                    onChanged: (value) {
+                    onChanged: (value) async {
                       if (value != null) {
                         setState(() {
                           _selectedMachine = value;
                           _machineForms = [];
                           _currentForm = null;
                         });
+                        await _restoreRackCache();
                         _loadStockoutForms(value.areaId);
                       }
                     },
@@ -1015,7 +1091,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
               RackDetailModal.show(
                 context: context,
                 racks: _racks,
-                onDelete: (rackNo) {
+                onDelete: (rackNo) async {
                   setState(() {
                     final rackIndex = _racks.indexWhere((r) => r.rackNo == rackNo);
                     if (rackIndex != -1) {
@@ -1026,14 +1102,16 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
                       _racks.removeAt(rackIndex);
                     }
                   });
+                  await _saveRackCache();
                 },
-                onUpdateBin: (rackNo, newBinId) {
+                onUpdateBin: (rackNo, newBinId) async {
                   setState(() {
                     final rackIndex = _racks.indexWhere((r) => r.rackNo == rackNo);
                     if (rackIndex != -1) {
                       _racks[rackIndex].bin = newBinId;
                     }
                   });
+                  await _saveRackCache();
                 },
               );
             }
@@ -1797,11 +1875,16 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
   }
 
   Future<void> _showBinLocationSelector(ScannedItem item) async {
-    final selectedBinData = await showDialog<BinData>(
+    final selectedBinData = await showDialog<BinItem>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Dialog(
-        child: BinSelectionModal(),
+      builder: (context) => Dialog(
+        child: BinSelectionModal(
+          lastSelected: _lastSelectedArea,
+          incomingQty: _scannedItemsMap.length,
+          rackData: _racks,
+          currentScannedItems: _scannedItemsMap,
+        ),
       ),
     );
 
@@ -1864,6 +1947,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
                     ? null
                     : () async {
                         // Validate: must have current form selected
+                        AppModal.showLoading(context: context);
                         if (_currentForm == null || _selectedMachine == null) {
                           AppModal.showWarning(
                             context: context,
@@ -1916,7 +2000,11 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
                           racks: apiRacks,
                         );
 
+                        if (mounted) AppModal.hideLoading(context);
+
                         if (response.success) {
+                          _saveRackCache();
+
                           setState(() {
                             _racks.clear();
                             _allRackTagIds.clear();
@@ -1935,6 +2023,8 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
                             message: response.message,
                           );
                         }
+
+
                       },
                 icon: const Icon(Icons.save, size: 20),
                 label: const Text(

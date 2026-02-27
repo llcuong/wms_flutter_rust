@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../config/constants/app_colors.dart';
 
-enum ModalType { success, error, warning, info, confirm }
+enum ModalType { success, error, warning, info, confirm, loading }
 
 class AppModal {
   static Future<bool?> show({
@@ -27,6 +27,25 @@ class AppModal {
         );
       },
     );
+  }
+
+  static void showLoading({
+    required BuildContext context,
+    String message = 'Please wait...',
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _ModalDialog(
+        type: ModalType.loading,
+        title: 'Loading',
+        message: message,
+      ),
+    );
+  }
+
+  static void hideLoading(BuildContext context) {
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   static void showSuccess({
@@ -128,7 +147,30 @@ class _ModalDialog extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(24),
       ),
-      child: Container(
+      child: type == ModalType.loading
+          ? Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 64,
+              height: 64,
+              child: CircularProgressIndicator(strokeWidth: 4),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              message,
+              style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      )
+          : Container(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -171,14 +213,17 @@ class _ModalDialog extends StatelessWidget {
                 if (type == ModalType.confirm && cancelText != null)
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () => Navigator.of(context).pop(false),
+                      onPressed: () =>
+                          Navigator.of(context).pop(false),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.slate100,
                         foregroundColor: AppColors.slate700,
                         elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding:
+                        const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius:
+                          BorderRadius.circular(12),
                         ),
                       ),
                       child: Text(
@@ -199,12 +244,15 @@ class _ModalDialog extends StatelessWidget {
                       Navigator.of(context).pop(true);
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: colors['color'] as Color,
+                      backgroundColor:
+                      colors['color'] as Color,
                       foregroundColor: Colors.white,
                       elevation: 2,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      padding:
+                      const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius:
+                        BorderRadius.circular(12),
                       ),
                     ),
                     child: Text(
@@ -255,6 +303,12 @@ class _ModalDialog extends StatelessWidget {
           'color': AppColors.primary,
           'bg': AppColors.primary.withValues(alpha: 0.1),
           'icon': Icons.help,
+        };
+      case ModalType.loading:
+        return {
+          'color': AppColors.primary,
+          'bg': Colors.transparent,
+          'icon': Icons.hourglass_top,
         };
     }
   }

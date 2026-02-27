@@ -23,27 +23,100 @@ class ParameterOption {
   String toString() => name;
 }
 
-class BinData {
+class BinItem {
   final String binId;
-  final String? binName;
-  final String? areaId;
+  final int level;
+  final int batch;
+  final int x;
+  final int y;
+  final int w;
+  final int l;
 
-  BinData({
+  BinItem({
     required this.binId,
-    this.binName,
-    this.areaId,
+    required this.level,
+    required this.batch,
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.l,
   });
 
-  factory BinData.fromJson(Map<String, dynamic> json) {
-    return BinData(
+  factory BinItem.fromJson(Map<String, dynamic> json) {
+    return BinItem(
       binId: json['bin_id'] ?? '',
-      binName: json['bin_name'],
-      areaId: json['area_id'],
+      level: json['level'] ?? 0,
+      batch: json['batch'] ?? 0,
+      x: json['x'] ?? 0,
+      y: json['y'] ?? 0,
+      w: json['w'] ?? 0,
+      l: json['l'] ?? 0,
     );
   }
+}
 
-  @override
-  String toString() => binId;
+class AreaData {
+  final String id;
+  final String name;
+  final int x;
+  final int y;
+  final int w;
+  final int l;
+  final int batchNo;
+  final Map<String, Map<String, List<BinItem>>> bins;
+
+  AreaData({
+    required this.id,
+    required this.name,
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.l,
+    required this.batchNo,
+    required this.bins,
+  });
+
+  factory AreaData.fromJson(Map<String, dynamic> json) {
+    Map<String, Map<String, List<BinItem>>> parsedBins = {};
+
+    if (json['bins'] != null) {
+      (json['bins'] as Map<String, dynamic>).forEach((rowKey, levelMap) {
+        parsedBins[rowKey] = {};
+
+        (levelMap as Map<String, dynamic>).forEach((levelKey, binList) {
+          parsedBins[rowKey]![levelKey] =
+              (binList as List)
+                  .map((e) => BinItem.fromJson(e))
+                  .toList();
+        });
+      });
+    }
+
+    return AreaData(
+      id: json['id'] ?? '',
+      name: json['name'] ?? '',
+      x: json['x'] ?? 0,
+      y: json['y'] ?? 0,
+      w: json['w'] ?? 0,
+      l: json['l'] ?? 0,
+      batchNo: json['batch_no'] ?? 0,
+      bins: parsedBins,
+    );
+  }
+}
+
+List<BinItem> flattenBins(List<AreaData> areas) {
+  final List<BinItem> result = [];
+
+  for (final area in areas) {
+    area.bins.forEach((rowKey, levelMap) {
+      levelMap.forEach((levelKey, binList) {
+        result.addAll(binList);
+      });
+    });
+  }
+
+  return result;
 }
 
 class BasketData {
@@ -69,6 +142,18 @@ class BasketData {
     required this.formerUsedDay,
   });
 
+  Map<String, dynamic> toJson() => {
+    'basketNo': basketNo,
+    'basketVendor': basketVendor,
+    'basketCapacity': basketCapacity,
+    'basketLength': basketLength,
+    'basketReceiveDate': basketReceiveDate,
+    'basketPurchaseOrder': basketPurchaseOrder,
+    // 'bin': bin,
+    'formerSize': formerSize,
+    'formerUsedDay': formerUsedDay,
+  };
+
   factory BasketData.fromJson(Map<String, dynamic> json) {
     return BasketData(
       tagId: json['tag_id'] ?? '',
@@ -86,6 +171,152 @@ class BasketData {
 
 
 class ApiService {
+  static Future<BasketData?> getStockOutBasketData(String tagId) async {
+    try {
+      final url = Uri.parse('${AppStrings.apiBaseUrl}${AppStrings.uhfBasketStockOutApi}?tagId=$tagId');
+
+      final response = await http.get(url).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+
+        if (jsonData['data'] != null && jsonData['data'].isNotEmpty) {
+          return BasketData.fromJson(jsonData['data'][0]);
+        }
+        return null;
+      } else {
+        throw Exception('Failed to load basket data: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching basket data: $e');
+      rethrow;
+    }
+  }
+
+  /// ------------------ PLANTS ------------------
+  static Future<List<String>> getPlants() async {
+    try {
+      final uri = Uri.parse(
+        '${AppStrings.apiBaseUrl}${AppStrings.getPlantsApi}',
+      );
+      print('Fetching plants from $uri');
+
+      final response = await http.get(uri).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        print('Plants data: $jsonData');
+        return List<String>.from(jsonData['plants'] ?? []);
+      } else {
+        throw Exception('Failed to load plants');
+      }
+    } catch (e) {
+      print('Error fetching plants: $e');
+      rethrow;
+    }
+  }
+
+  /// ------------------ MACHINES ------------------
+  static Future<List<String>> getMachines2({
+    required String plant,
+    String? mode, // change | clean | to_lk
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '${AppStrings.apiBaseUrl}${AppStrings.getMachinesApi}',
+      ).replace(queryParameters: {
+        'plant': plant,
+        if (mode != null) 'mode': mode,
+      });
+
+      final response = await http.get(uri).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return List<String>.from(jsonData['machines'] ?? []);
+      } else {
+        throw Exception('Failed to load machines');
+      }
+    } catch (e) {
+      print('Error fetching machines: $e');
+      rethrow;
+    }
+  }
+
+  /// ------------------ LINES ------------------
+  static Future<List<String>> getLines({
+    required String machine,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '${AppStrings.apiBaseUrl}${AppStrings.getLinesApi}',
+      ).replace(queryParameters: {
+        'machine': machine,
+      });
+
+      final response = await http.get(uri).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return List<String>.from(jsonData['lines'] ?? []);
+      } else {
+        throw Exception('Failed to load lines');
+      }
+    } catch (e) {
+      print('Error fetching lines: $e');
+      rethrow;
+    }
+  }
+
+  /// ------------------ STOCK FORM ------------------
+  static Future<String> getStockForm({
+    required String machine,
+    required String lineName,
+    required String sizeNameInput,
+    int? stockType,
+    String? existingForm,
+    String? idStockForm,
+    int? buttonMode,
+    int? callByButton,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '${AppStrings.apiBaseUrl}${AppStrings.getStockFormApi}',
+      ).replace(queryParameters: {
+        'machine': machine,
+        'line_name': lineName,
+        'size_name_input': sizeNameInput,
+        'stock_type': stockType.toString(),
+        if (existingForm != null) 'existing_form': existingForm,
+        if (idStockForm != null) 'id_stock_form': idStockForm,
+        if (buttonMode != null) 'button_mode': buttonMode.toString(),
+        if (callByButton != null) 'call_by_button': callByButton.toString(),
+      });
+
+      final response = await http.get(uri).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return jsonData['form_name'] as String;
+      } else {
+        throw Exception('Failed to load form name');
+      }
+    } catch (e) {
+      print('Error fetching form name: $e');
+      rethrow;
+    }
+  }
+
   /// Fetch parameter options from database
   /// group: 'size', 'brand', 'type', 'surface', etc.
   static Future<List<ParameterOption>> getParameterOptions(String group) async {
@@ -171,9 +402,38 @@ class ApiService {
     }
   }
 
+  static Future<List<BasketData>> getBasketsStockOutBatch(List<String> tagIds) async {
+    try {
+      final url = Uri.parse('${AppStrings.apiBaseUrl}/api/v2/baskets/stockout_batch');
+
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'tag_ids': tagIds}),
+      ).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        if (jsonData['data'] != null) {
+          return (jsonData['data'] as List)
+              .map((item) => BasketData.fromJson(item))
+              .toList();
+        }
+        return [];
+      } else {
+        throw Exception('Failed to load stockin batch data: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching stockin batch basket data: $e');
+      rethrow;
+    }
+  }
+
   static Future<BasketData?> getBasketData(String tagId) async {
     try {
-      final url = Uri.parse('${AppStrings.apiBaseUrl}${AppStrings.uhfBasketApi}?tagId=$tagId');
+      final url = Uri.parse('http://172.18.55.218:8000${AppStrings.uhfBasketApi}?tagId=$tagId');
       
       final response = await http.get(url).timeout(
         const Duration(seconds: 10),
@@ -194,6 +454,7 @@ class ApiService {
       rethrow;
     }
   }
+
   static Future<String?> generateBatchNo(String itemNo) async {
     try {
       final url = Uri.parse('${AppStrings.apiBaseUrl}/wh_former/generate_batch');
@@ -219,27 +480,29 @@ class ApiService {
     }
   }
 
-  static Future<List<BinData>> getBins() async {
+  static Future<List<AreaData>> getAreas() async {
     try {
-      final url = Uri.parse('${AppStrings.apiBaseUrl}/wh_former/bins');
-      
+      final url = Uri.parse('${AppStrings.apiBaseUrl}/wh_former/area');
+
       final response = await http.get(url).timeout(
         const Duration(seconds: 10),
       );
 
       if (response.statusCode == 200) {
         final jsonData = json.decode(response.body);
-        if (jsonData['data'] != null) {
-          return (jsonData['data'] as List)
-              .map((item) => BinData.fromJson(item))
+
+        if (jsonData['area_data'] != null) {
+          return (jsonData['area_data'] as List)
+              .map((item) => AreaData.fromJson(item))
               .toList();
         }
+
         return [];
       } else {
-        throw Exception('Failed to load bins: ${response.statusCode}');
+        throw Exception('Failed to load areas: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error fetching bins: $e');
+      print('Error fetching areas: $e');
       return [];
     }
   }
@@ -486,6 +749,118 @@ extension ApiServiceStockIn on ApiService {
       }
     } catch (e) {
       return StockInSaveResponse(
+        success: false,
+        message: 'Network error: $e',
+      );
+    }
+  }
+}
+
+// ==================== STOCK IN SAVE ====================
+
+class StockOutSaveResponse {
+  final bool success;
+  final String message;
+  final int? totalBaskets;
+  final int? totalFormers;
+  final String? batchNo;
+
+  StockOutSaveResponse({
+    required this.success,
+    required this.message,
+    this.totalBaskets,
+    this.totalFormers,
+    this.batchNo,
+  });
+
+  factory StockOutSaveResponse.fromJson(Map<String, dynamic> json) {
+    return StockOutSaveResponse(
+      success: json['success'] ?? false,
+      message: json['message'] ?? '',
+      totalBaskets: json['total_baskets'],
+      totalFormers: json['total_formers'],
+      batchNo: json['batch_no'],
+    );
+  }
+}
+
+class StockOutRackData {
+  final int rackNo;
+  final String bin;
+  final List<StockInItemData> items;
+
+  StockOutRackData({
+    required this.rackNo,
+    required this.bin,
+    required this.items,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'rack_no': rackNo,
+    'bin': bin,
+    'items': items.map((e) => e.toJson()).toList(),
+  };
+}
+
+class StockOutItemData {
+  final String tagId;
+  final String basketNo;
+  final int basketFormerQty;
+
+  StockOutItemData({
+    required this.tagId,
+    required this.basketNo,
+    required this.basketFormerQty,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'tag_id': tagId,
+    'basket_no': basketNo,
+    'basket_former_qty': basketFormerQty,
+  };
+}
+
+extension ApiServiceStockOut on ApiService {
+  /// Save Stock Out data to database
+  static Future<StockOutSaveResponse> saveStockOut({
+    required String stockoutForm,
+    required String formerSize,
+    required String selectedMachine,
+    required String stockoutFrom,
+    required String action,
+    required List<StockInRackData> racks,
+  }) async {
+    try {
+      final url = Uri.parse('${AppStrings.apiBaseUrl}/wh_former/stockout/save');
+
+      final body = {
+        'stockout_form': stockoutForm,
+        'former_size': formerSize,
+        'selected_machine': selectedMachine,
+        'stockout_from': stockoutFrom,
+        'action': action,
+        'racks': racks.map((r) => r.toJson()).toList(),
+      };
+
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      ).timeout(const Duration(seconds: 30));
+
+      print(response);
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return StockOutSaveResponse.fromJson(jsonData);
+      } else {
+        return StockOutSaveResponse(
+          success: false,
+          message: 'Server error: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      return StockOutSaveResponse(
         success: false,
         message: 'Network error: $e',
       );

@@ -81,22 +81,6 @@ class HomeScreen extends StatelessWidget {
                 color: AppColors.textPrimary,
               ),
             ),
-            const SizedBox(height: 16),
-            _buildActivityItem(
-              'LN25461127UA',
-              '144 formers processed',
-              '2 hours ago',
-            ),
-            _buildActivityItem(
-              'LN25461128UA',
-              '96 formers processed',
-              '5 hours ago',
-            ),
-            _buildActivityItem(
-              'LN25461129UA',
-              '120 formers processed',
-              '1 day ago',
-            ),
           ],
         ),
       ),

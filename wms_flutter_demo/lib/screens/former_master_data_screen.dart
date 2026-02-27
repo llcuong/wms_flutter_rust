@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/app_modal.dart';
 import '../components/common/rfid_scanned_items_modal.dart';
@@ -84,6 +86,7 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     _initializeDropdowns();
     _loadAllOptions();
     _initializeRfid();
+    _restoreRackCache();
   }
 
   /// Load all parameter options from database
@@ -597,6 +600,46 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     );
   }
 
+  String get _rackCacheKey {
+    return 'former_master_data_rack_temp';
+  }
+
+  Future<void> _saveRackCache() async {
+    final provider = Provider.of<FormerMasterDataProvider>(context, listen: false);
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final data = {
+      'racks': provider.racks.map((e) => e.toJson()).toList(),
+      'allRackTagIds': provider.allRackTagIds.toList(),
+    };
+
+    await prefs.setString(_rackCacheKey, jsonEncode(data));
+  }
+
+  Future<void> _restoreRackCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final provider = context.read<FormerMasterDataProvider>();
+
+    final jsonString = prefs.getString(_rackCacheKey);
+    if (jsonString == null) return;
+
+    final decoded = jsonDecode(jsonString);
+
+    final racks = (decoded['racks'] as List)
+        .map((e) => Rack.fromJson(e))
+        .toList();
+
+    final tagIds = (decoded['allRackTagIds'] as List).cast<String>().toSet();
+
+    provider.restoreCache(
+      racks: racks,
+      tagIds: tagIds,
+    );
+  }
+
+  AreaData? _lastSelectedArea;
+
   Future<void> _addCurrentScannedToBatch() async {
     final provider = Provider.of<FormerMasterDataProvider>(context, listen: false);
     if (provider.scannedItemsMap.isEmpty) {
@@ -609,25 +652,29 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     }
 
     // Show Bin Selection Modal
-    final selectedBin = await showDialog<BinData>(
+    final selectedArea= await showDialog<AreaData>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Dialog(
-        child: BinSelectionModal(),
+      builder: (context) => Dialog(
+        child: BinSelectionModal(
+            lastSelected: _lastSelectedArea,
+            incomingQty: provider.scannedCount,
+            rackData: provider.racks,
+            currentScannedItems: provider.scannedItemsMap,
+        ),
       ),
     );
 
-    if (selectedBin == null) {
+    if (selectedArea == null) {
       // User cancelled
       return;
     }
 
     // Provider handles the logic
-    // We need current rack number?
-    // Provider can track it or we pass it.
-    // Logic: rackNo based on current count.
     final nextRackNo = provider.racks.length + 1;
-    provider.addCurrentScanToRack(nextRackNo, selectedBin.binId);
+    provider.addCurrentScanToRack(nextRackNo, selectedArea.name);
+
+    await _saveRackCache();
 
     AppModal.showSuccess(
       context: context,
@@ -660,17 +707,22 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
 
       if (confirmAdd == true) {
         // Add current scanned to batch first
-         final selectedBin = await showDialog<BinData>(
+         final selectedArea = await showDialog<AreaData>(
           context: context,
           barrierDismissible: false,
-          builder: (context) => const Dialog(
-            child: BinSelectionModal(),
+          builder: (context) => Dialog(
+            child: BinSelectionModal(
+                lastSelected: _lastSelectedArea,
+                incomingQty: provider.scannedCount,
+                rackData: provider.racks,
+                currentScannedItems: provider.scannedItemsMap,
+            ),
           ),
         );
-        if (selectedBin == null) return; // Cancelled
+        if (selectedArea == null) return; // Cancelled
         
         final nextRackNo = provider.racks.length + 1;
-        provider.addCurrentScanToRack(nextRackNo, selectedBin.binId);
+        provider.addCurrentScanToRack(nextRackNo, selectedArea.name);
       }
     }
     
@@ -713,6 +765,8 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
       await provider.saveBatch(masterInfo, batchNo);
 
       if (mounted) {
+        _saveRackCache();
+
         AppModal.showSuccess(
           context: context,
           title: AppStrings.success,
@@ -732,8 +786,9 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     }
   }
 
-  void _deleteRack(int rackNo) {
+  Future<void> _deleteRack(int rackNo) async {
       Provider.of<FormerMasterDataProvider>(context, listen: false).deleteRack(rackNo);
+      await _saveRackCache();
   }
 
 
@@ -925,6 +980,8 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
   }
 
   Widget _buildMasterInfoTab() {
+    Timer? _dnDebounce;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -950,6 +1007,8 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
                       label: AppStrings.itemNo,
                       required: true,
                       value: _selectedItemNo,
+
+
                       items: _itemNoOptions.map((o) => o.name).toSet().union({_selectedItemNo}).toList(),
                       itemLabel: (item) => item,
                       onChanged: (value) {
@@ -1270,7 +1329,7 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
                 context: context,
                 racks: provider.racks,
                 onDelete: _deleteRack,
-                onUpdateBin: provider.updateRackBin,
+                onUpdateBin: (rackNo, newBinId) async { provider.updateRackBin; await _saveRackCache();},
               );
             }
           : isClickableForItems

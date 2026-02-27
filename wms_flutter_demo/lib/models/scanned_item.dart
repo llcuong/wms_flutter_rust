@@ -27,6 +27,31 @@ class ScannedItem {
     this.errorMessage,
     this.basketData,
   });
+
+  // Convert to JSON
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'quantity': quantity,
+    'vendor': vendor,
+    'bin': bin,
+    'status': status.name, // enum → string
+    'rssi': rssi,
+    'errorMessage': errorMessage,
+    'basketData': basketData?.toJson(),
+  };
+
+  factory ScannedItem.fromJson(Map<String, dynamic> json) => ScannedItem(
+    id: json['id'],
+    quantity: json['quantity'],
+    vendor: json['vendor'],
+    bin: json['bin'],
+    status: ItemStatus.values.byName(json['status']),
+    rssi: json['rssi'],
+    errorMessage: json['errorMessage'],
+    basketData: json['basketData'] != null
+        ? BasketData.fromJson(json['basketData'])
+        : null,
+  );
 }
 
 class Rack {
@@ -41,6 +66,22 @@ class Rack {
     this.bin = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
+
+  // Convert to JSON
+  Map<String, dynamic> toJson() => {
+    'rackNo': rackNo,
+    'createdAt': createdAt.toIso8601String(),
+    'items': items.map((e) => e.toJson()).toList(),
+  };
+
+  // Create from JSON
+  factory Rack.fromJson(Map<String, dynamic> json) => Rack(
+    rackNo: json['rackNo'],
+    createdAt: DateTime.parse(json['createdAt']),
+    items: (json['items'] as List)
+        .map((e) => ScannedItem.fromJson(e))
+        .toList(),
+  );
 }
 
 enum ScannerStatus {
