@@ -38,6 +38,9 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   StockOutAction? _selectedAction;
 
   // Form Controllers - New API structure
+  List<String> _bins = [];
+  String? _selectedBin;
+
   List<MachineData> _machines = [];
   final List<String> _lines = ['A1', 'B1', 'A2', 'B2'];
   List<StockoutFormData> _stockoutForms = [];
@@ -50,6 +53,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
   bool _isLoadingMachines = false;
   bool _isLoadingForms = false;
+  bool _isLoadingBins = false;
 
   // RFID Scanner
   final RfidScanner _rfidScanner = RfidScanner();
@@ -145,6 +149,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       _generateStockForm();
     }
 
+    await _loadBins();
+
     await _initializeRfid();
     await _restoreRackCache();
   }
@@ -172,6 +178,27 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     }
 
     await _restoreRackCache();
+  }
+
+  Future<void> _loadBins() async {
+    setState(() => _isLoadingBins = true);
+
+    try {
+      final bins = await ApiService.getBins();
+
+      if (!mounted) return;
+
+      setState(() {
+        _bins = bins;
+        _selectedBin = bins.isNotEmpty ? bins.first : null;
+        _isLoadingBins = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => _isLoadingBins = false);
+      _showError('Load Failed', 'Cannot load bins: ${e.toString()}');
+    }
   }
 
   Future<void> _loadMachines() async {
@@ -901,6 +928,20 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                     placeholder: 'Auto-generated...',
                     controller: _stockFormController,
                   ),
+
+                const SizedBox(height: 16),
+
+                // BIN SELECTION - NEW CONTROL
+                _isLoadingBins
+                    ? _buildLoadingDropdown('BIN')
+                    : FormDropdownField<String>(
+                  label: 'BIN',
+                  required: true,
+                  value: _selectedBin,
+                  items: _bins,
+                  itemLabel: (item) => item,
+                  onChanged: (value) => setState(() => _selectedBin = value!),
+                ),
 
                 const SizedBox(height: 16),
 

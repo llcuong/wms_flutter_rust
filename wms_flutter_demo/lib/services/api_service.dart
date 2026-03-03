@@ -195,6 +195,38 @@ class ApiService {
     }
   }
 
+  /// ------------------ BINS ------------------
+  static Future<List<String>> getBins() async {
+    try {
+      final uri = Uri.parse(
+        '${AppStrings.apiBaseUrl}/wh_former/bins',
+      );
+
+      print('Fetching bins from $uri');
+
+      final response = await http.get(uri).timeout(
+        const Duration(seconds: 10),
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+
+        print('Bins data: $jsonData');
+
+        if (jsonData['success'] == true) {
+          return List<String>.from(jsonData['bins'] ?? []);
+        } else {
+          throw Exception(jsonData['message'] ?? 'Failed to load bins');
+        }
+      } else {
+        throw Exception('Failed to load bins: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching bins: $e');
+      rethrow;
+    }
+  }
+
   /// ------------------ PLANTS ------------------
   static Future<List<String>> getPlants() async {
     try {
@@ -402,17 +434,30 @@ class ApiService {
     }
   }
 
-  static Future<List<BasketData>> getBasketsStockOutBatch(List<String> tagIds) async {
+  static Future<List<BasketData>> getBasketsStockOutBatch(
+      List<String> tagIds, {
+        String? binLocation,
+      }) async {
     try {
-      final url = Uri.parse('${AppStrings.apiBaseUrl}/api/v2/baskets/stockout_batch');
+      final url = Uri.parse(
+          '${AppStrings.apiBaseUrl}/api/v2/baskets/stockout_batch');
 
-      final response = await http.post(
+      // Build request body dynamically
+      final Map<String, dynamic> body = {
+        'tag_ids': tagIds,
+      };
+
+      if (binLocation != null) {
+        body['bin_location'] = binLocation;
+      }
+
+      final response = await http
+          .post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'tag_ids': tagIds}),
-      ).timeout(
-        const Duration(seconds: 10),
-      );
+        body: json.encode(body),
+      )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final jsonData = json.decode(response.body);
@@ -423,10 +468,11 @@ class ApiService {
         }
         return [];
       } else {
-        throw Exception('Failed to load stockin batch data: ${response.statusCode}');
+        throw Exception(
+            'Failed to load stockout batch data: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error fetching stockin batch basket data: $e');
+      print('Error fetching stockout batch basket data: $e');
       rethrow;
     }
   }
@@ -756,7 +802,7 @@ extension ApiServiceStockIn on ApiService {
   }
 }
 
-// ==================== STOCK IN SAVE ====================
+// ==================== STOCK OUT SAVE ====================
 
 class StockOutSaveResponse {
   final bool success;
@@ -861,6 +907,112 @@ extension ApiServiceStockOut on ApiService {
       }
     } catch (e) {
       return StockOutSaveResponse(
+        success: false,
+        message: 'Network error: $e',
+      );
+    }
+  }
+}
+
+// ==================== EMPTY STOCK SAVE ====================
+
+class EmptyStockSaveResponse {
+  final bool success;
+  final String message;
+  final int? totalBaskets;
+  final int? totalFormers;
+
+  EmptyStockSaveResponse({
+    required this.success,
+    required this.message,
+    this.totalBaskets,
+    this.totalFormers,
+  });
+
+  factory EmptyStockSaveResponse.fromJson(Map<String, dynamic> json) {
+    return EmptyStockSaveResponse(
+      success: json['success'] ?? false,
+      message: json['message'] ?? '',
+      totalBaskets: json['total_baskets'],
+      totalFormers: json['total_formers'],
+    );
+  }
+}
+
+class EmptyStockRackData {
+  final int rackNo;
+  final String bin;
+  final List<EmptyStockItemData> items;
+
+  EmptyStockRackData({
+    required this.rackNo,
+    required this.bin,
+    required this.items,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'rack_no': rackNo,
+    'bin': bin,
+    'items': items.map((e) => e.toJson()).toList(),
+  };
+}
+
+class EmptyStockItemData {
+  final String tagId;
+  final String basketNo;
+  final int basketFormerQty;
+
+  EmptyStockItemData({
+    required this.tagId,
+    required this.basketNo,
+    required this.basketFormerQty,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'tag_id': tagId,
+    'basket_no': basketNo,
+    'basket_former_qty': basketFormerQty,
+  };
+}
+
+extension ApiServiceEmptyStock on ApiService {
+  /// Save Empty Stock data to backend
+  static Future<EmptyStockSaveResponse> saveEmptyStock({
+    required String selectedMachine,
+    required String action,
+    required List<EmptyStockRackData> racks,
+  }) async {
+    try {
+      final url = Uri.parse(
+          '${AppStrings.apiBaseUrl}/wh_former/empty_stock/save');
+
+      final body = {
+        'selected_machine': selectedMachine,
+        'action': action,
+        'racks': racks.map((r) => r.toJson()).toList(),
+      };
+
+      final response = await http
+          .post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      )
+          .timeout(const Duration(seconds: 30));
+
+      print("EmptyStock Response: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return EmptyStockSaveResponse.fromJson(jsonData);
+      } else {
+        return EmptyStockSaveResponse(
+          success: false,
+          message: 'Server error: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      return EmptyStockSaveResponse(
         success: false,
         message: 'Network error: $e',
       );

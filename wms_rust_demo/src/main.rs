@@ -71,11 +71,13 @@ async fn main() {
         .route("/wh_former/generate_batch", post(handle_generate_batch))
         // .route("/wh_former/bins", get(handle_get_bins))
         .route("/wh_former/area", get(handle_get_area_data))
+        .route("/wh_former/bins", get(handle_get_bins))
         .route("/wh_former/machines", get(handle_get_machines))
         .route("/wh_former/stockout_forms", get(handle_get_stockout_forms))
         .route("/wh_former/save_batch", post(handle_save_batch))
         .route("/wh_former/stockin/save", post(handle_stockin_save))
         .route("/wh_former/stockout/save", post(handle_stockout_save))
+        .route("/wh_former/empty_stock/save", post(handle_empty_stock_save))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -267,24 +269,30 @@ async fn handle_stockout_batch_baskets(
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
 
+    let bin_condition = if payload.bin_location.is_some() {
+        format!("AND fbd.bin = @P{}", count + 1)
+    } else {
+        "AND fbd.bin NOT LIKE '%NBR%'".to_string()
+    };
+
     // Standard query for scanning baskets
     let query = format!(
         r#"
-        SELECT DISTINCT
-            bmd.basket_no,
-            bmd.basket_vendor,
-            bmd.basket_purchase_order,
-            bmd.is_active
-        FROM [VNWMS].[dbo].[wh_former_basket_master_data] bmd
-        WHERE bmd.basket_no IN ({})
-        AND EXISTS (
-            SELECT 1 
-            FROM [VNWMS].[dbo].[wh_former_former_bin_data] fbd 
-            WHERE fbd.basket_no = bmd.basket_no 
-            AND fbd.bin NOT LIKE '%NBR%'
-        )
-        "#,
-        in_clause
+    SELECT DISTINCT
+        bmd.basket_no,
+        bmd.basket_vendor,
+        bmd.basket_purchase_order,
+        bmd.is_active
+    FROM [VNWMS].[dbo].[wh_former_basket_master_data] bmd
+    WHERE bmd.basket_no IN ({})
+    AND EXISTS (
+        SELECT 1 
+        FROM [VNWMS].[dbo].[wh_former_former_bin_data] fbd 
+        WHERE fbd.basket_no = bmd.basket_no 
+        {}
+    )
+    "#,
+        in_clause, bin_condition
     );
 
     // LOGGING: Print the full query and parameters
@@ -455,6 +463,7 @@ async fn test_db_connection(State(state): State<Arc<AppState>>) -> impl IntoResp
 #[derive(Debug, Deserialize)]
 struct BatchRequest {
     tag_ids: Vec<String>,
+    pub bin_location: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2239,17 +2248,6 @@ async fn handle_stockout_save(
         is_exist
     );
 
-    //
-    // Calculate totals
-    //
-    let total_baskets: i32 = payload.racks.iter().map(|r| r.items.len() as i32).sum();
-    let total_formers: i32 = payload
-        .racks
-        .iter()
-        .flat_map(|r| r.items.iter())
-        .map(|i| i.basket_former_qty)
-        .sum();
-
     let most_batch_former_qty = total_formers;
 
     //
@@ -2424,8 +2422,8 @@ async fn handle_stockout_save(
                     &[
                         &batch_no,
                         &item.basket_no,
-                        &rack.bin,                                  // from_bin = bin
-                        &payload.selected_machine,                 // to_bin = machine for stockout
+                        &rack.bin,                 // from_bin = bin
+                        &payload.selected_machine, // to_bin = machine for stockout
                         &item.basket_former_qty,
                         &payload.former_size,
                     ],
@@ -2483,7 +2481,13 @@ async fn handle_stockout_save(
         let _ = conn
             .execute(
                 query_update_log,
-                &[&total_formers, &total_baskets, &batch_no, &key, &payload.selected_machine],
+                &[
+                    &total_formers,
+                    &total_baskets,
+                    &batch_no,
+                    &key,
+                    &payload.selected_machine,
+                ],
             )
             .await;
     } else {
@@ -2504,7 +2508,14 @@ async fn handle_stockout_save(
         let _ = conn
             .execute(
                 query_insert_log,
-                &[&batch_no, &key, &total_formers, &total_baskets, &used_day, &payload.selected_machine],
+                &[
+                    &batch_no,
+                    &key,
+                    &total_formers,
+                    &total_baskets,
+                    &used_day,
+                    &payload.selected_machine,
+                ],
             )
             .await;
     }
@@ -2535,6 +2546,243 @@ async fn handle_stockout_save(
             total_baskets: Some(total_baskets),
             total_formers: Some(total_formers),
             batch_no: Some(batch_no),
+        }),
+    )
+}
+
+// ==================== EMPTY STOCK SAVE ====================
+
+#[derive(Debug, Deserialize)]
+struct EmptyStockSaveRequest {
+    selected_machine: String,
+    action: String,
+    racks: Vec<EmptyStockRack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmptyStockRack {
+    #[allow(dead_code)]
+    rack_no: i32,
+    bin: String,
+    items: Vec<EmptyStockItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmptyStockItem {
+    #[allow(dead_code)]
+    tag_id: String,
+    basket_no: String,
+    basket_former_qty: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct EmptyStockSaveResponse {
+    success: bool,
+    message: String,
+    total_baskets: Option<i32>,
+    total_formers: Option<i32>,
+}
+
+async fn handle_empty_stock_save(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EmptyStockSaveRequest>,
+) -> impl IntoResponse {
+    tracing::info!(
+        "📦 Empty Stock Save request: action={}, bin={}",
+        payload.action,
+        payload.racks
+            .first()
+            .map(|r| r.bin.as_str())
+            .unwrap_or("N/A")
+    );
+
+    // 1. Calculate totals
+    let total_baskets: i32 = payload.racks.iter().map(|r| r.items.len() as i32).sum();
+    let total_formers: i32 = payload
+        .racks
+        .iter()
+        .flat_map(|r| r.items.iter())
+        .map(|i| i.basket_former_qty)
+        .sum();
+
+    tracing::info!(
+        "📊 Totals: {} baskets, {} formers",
+        total_baskets,
+        total_formers
+    );
+
+    // 2. Get connection
+    let mut conn = match state.pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("❌ DB connection error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(EmptyStockSaveResponse {
+                    success: false,
+                    message: format!("Database connection error: {}", e),
+                    total_baskets: None,
+                    total_formers: None,
+                }),
+            );
+        }
+    };
+
+    // 3. Determine target bin (FIXED TYPE)
+    let target_bin: String = if payload.action.to_lowercase() == "in" {
+        "X".to_string()
+    } else {
+        payload.selected_machine.clone()
+    };
+
+    // 4. Process each item
+    for rack in &payload.racks {
+        for item in &rack.items {
+            tracing::info!("🔄 Processing basket_no={}", item.basket_no);
+
+            // 4a. Update bin_data
+            let query_bin = r#"
+                UPDATE [VNWMS].[dbo].[wh_former_former_bin_data]
+                SET bin = @P1,
+                    basket_former_qty = 0,
+                    update_at = GETDATE()
+                WHERE basket_no = @P2
+            "#;
+
+            if let Err(e) = conn
+                .execute(query_bin, &[&target_bin, &item.basket_no])
+                .await
+            {
+                tracing::error!("❌ bin_data update failed: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(EmptyStockSaveResponse {
+                        success: false,
+                        message: "Failed updating bin data".to_string(),
+                        total_baskets: None,
+                        total_formers: None,
+                    }),
+                );
+            }
+
+            // 4b. Update basket_master_data
+            let query_master = r#"
+                UPDATE [VNWMS].[dbo].[wh_former_basket_master_data]
+                SET former_size = NULL
+                WHERE basket_no = @P1
+            "#;
+
+            if let Err(e) = conn.execute(query_master, &[&item.basket_no]).await {
+                tracing::error!("❌ basket_master_data update failed: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(EmptyStockSaveResponse {
+                        success: false,
+                        message: "Failed updating basket master data".to_string(),
+                        total_baskets: None,
+                        total_formers: None,
+                    }),
+                );
+            }
+        }
+    }
+
+    tracing::info!("✅ Empty Stock saved successfully");
+
+    (
+        StatusCode::OK,
+        Json(EmptyStockSaveResponse {
+            success: true,
+            message: format!("Empty Stock {} to {} saved successfully", payload.action, target_bin),
+            total_baskets: Some(total_baskets),
+            total_formers: Some(total_formers),
+        }),
+    )
+}
+
+
+#[derive(Debug, Serialize)]
+struct BinListResponse {
+    success: bool,
+    message: String,
+    bins: Vec<String>,
+}
+
+async fn handle_get_bins(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    tracing::info!("📦 Get bin list request");
+
+    // 1️⃣ Get connection
+    let mut conn = match state.pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("❌ DB connection error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(BinListResponse {
+                    success: false,
+                    message: format!("Database connection error: {}", e),
+                    bins: vec![],
+                }),
+            );
+        }
+    };
+
+    // 2️⃣ Query
+    let query = r#"
+        SELECT DISTINCT bin
+        FROM [VNWMS].[dbo].[wh_former_former_bin_data]
+        WHERE bin NOT LIKE '%NBR%'
+          AND bin <> 'X'
+          AND bin IS NOT NULL
+        ORDER BY bin
+    "#;
+
+    // 3️⃣ Execute and collect rows (NO STREAM, NO EXTRA CRATE)
+    let rows = match conn.query(query, &[]).await {
+        Ok(result) => match result.into_first_result().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!("❌ Failed to read rows: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(BinListResponse {
+                        success: false,
+                        message: "Failed to read bin rows".to_string(),
+                        bins: vec![],
+                    }),
+                );
+            }
+        },
+        Err(e) => {
+            tracing::error!("❌ Query failed: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(BinListResponse {
+                    success: false,
+                    message: "Failed to fetch bins".to_string(),
+                    bins: vec![],
+                }),
+            );
+        }
+    };
+
+    // 4️⃣ Convert rows to Vec<String>
+    let bins: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get::<&str, _>("bin").map(|b| b.to_string()))
+        .collect();
+
+    tracing::info!("✅ Retrieved {} bins", bins.len());
+
+    // 5️⃣ Return response
+    (
+        StatusCode::OK,
+        Json(BinListResponse {
+            success: true,
+            message: "Bins retrieved successfully".to_string(),
+            bins,
         }),
     )
 }
