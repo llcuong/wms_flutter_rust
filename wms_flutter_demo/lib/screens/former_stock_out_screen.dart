@@ -445,7 +445,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       }
 
       // Fetch batch data from API
-      final batchData = await ApiService.getBasketsStockOutBatch(batchTags);
+      final batchData = await ApiService.getBasketsStockOutBatch(batchTags, binLocation: _selectedBin);
 
       // Create a map for quick lookup
       final dataMap = {for (var item in batchData) item.tagId: item};

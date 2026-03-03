@@ -304,8 +304,15 @@ async fn handle_stockout_batch_baskets(
 
     // Build query with parameters
     let mut query_builder = tiberius::Query::new(query);
+
+    // Bind tag_ids (@P1 .. @Pcount)
     for tag_id in &payload.tag_ids {
         query_builder.bind(tag_id.as_str());
+    }
+
+    // Bind bin as last parameter (@Pcount+1)
+    if let Some(bin) = &payload.bin_location {
+        query_builder.bind(bin.as_str());
     }
 
     // Execute query
@@ -2590,7 +2597,8 @@ async fn handle_empty_stock_save(
     tracing::info!(
         "📦 Empty Stock Save request: action={}, bin={}",
         payload.action,
-        payload.racks
+        payload
+            .racks
             .first()
             .map(|r| r.bin.as_str())
             .unwrap_or("N/A")
@@ -2693,13 +2701,15 @@ async fn handle_empty_stock_save(
         StatusCode::OK,
         Json(EmptyStockSaveResponse {
             success: true,
-            message: format!("Empty Stock {} to {} saved successfully", payload.action, target_bin),
+            message: format!(
+                "Empty Stock {} to {} saved successfully",
+                payload.action, target_bin
+            ),
             total_baskets: Some(total_baskets),
             total_formers: Some(total_formers),
         }),
     )
 }
-
 
 #[derive(Debug, Serialize)]
 struct BinListResponse {
@@ -2708,9 +2718,7 @@ struct BinListResponse {
     bins: Vec<String>,
 }
 
-async fn handle_get_bins(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("📦 Get bin list request");
 
     // 1️⃣ Get connection
