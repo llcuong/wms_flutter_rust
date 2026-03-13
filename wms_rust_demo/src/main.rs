@@ -20,6 +20,14 @@ use tower_http::trace::TraceLayer;
 // App State with connection pool
 struct AppState {
     pool: Pool<ConnectionManager>,
+    db_prefix: String,
+}
+
+/// Returns the database schema prefix, e.g. "[GDWMS-dev].[dbo]"
+/// Reads DATABASE_NAME env var (default: "GDWMS")
+fn get_db_prefix() -> String {
+    let db_name = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "GDWMS".to_string());
+    format!("[{}].[dbo]", db_name)
 }
 
 #[tokio::main]
@@ -37,8 +45,11 @@ async fn main() {
 
     tracing::info!("✅ Database connection pool created successfully!");
 
+    let db_prefix = get_db_prefix();
+    tracing::info!("🗄️ Using database schema prefix: {}", db_prefix);
+
     // Shared state
-    let state = Arc::new(AppState { pool });
+    let state = Arc::new(AppState { pool, db_prefix });
 
     // CORS configuration - allow credentials with mirrored origin
     let cors = CorsLayer::new()
@@ -78,6 +89,7 @@ async fn main() {
         .route("/wh_former/stockin/save", post(handle_stockin_save))
         .route("/wh_former/stockout/save", post(handle_stockout_save))
         .route("/wh_former/empty_stock/save", post(handle_empty_stock_save))
+        .route("/wh_former/moving/save", post(handle_former_moving_save))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -135,6 +147,8 @@ async fn handle_stockin_batch_baskets(
         }
     };
 
+    let db = &state.db_prefix;
+
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
@@ -147,16 +161,16 @@ async fn handle_stockin_batch_baskets(
             bmd.basket_vendor,
             bmd.basket_purchase_order,
             bmd.is_active
-        FROM [VNWMS].[dbo].[wh_former_basket_master_data] bmd
-        WHERE bmd.basket_no IN ({})
+        FROM {db}.[wh_former_basket_master_data] bmd
+        WHERE bmd.basket_no IN ({in_clause})
         AND EXISTS (
             SELECT 1 
-            FROM [VNWMS].[dbo].[wh_former_former_bin_data] fbd 
+            FROM {db}.[wh_former_former_bin_data] fbd 
             WHERE fbd.basket_no = bmd.basket_no 
             AND fbd.bin LIKE '%NBR%'
+            AND fbd.bin <> 'X'
         )
-        "#,
-        in_clause
+        "#
     );
 
     // LOGGING: Print the full query and parameters
@@ -265,6 +279,8 @@ async fn handle_stockout_batch_baskets(
         }
     };
 
+    let db = &state.db_prefix;
+
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
@@ -283,16 +299,15 @@ async fn handle_stockout_batch_baskets(
         bmd.basket_vendor,
         bmd.basket_purchase_order,
         bmd.is_active
-    FROM [VNWMS].[dbo].[wh_former_basket_master_data] bmd
-    WHERE bmd.basket_no IN ({})
+    FROM {db}.[wh_former_basket_master_data] bmd
+    WHERE bmd.basket_no IN ({in_clause})
     AND EXISTS (
         SELECT 1 
-        FROM [VNWMS].[dbo].[wh_former_former_bin_data] fbd 
+        FROM {db}.[wh_former_former_bin_data] fbd 
         WHERE fbd.basket_no = bmd.basket_no 
-        {}
+        {bin_condition}
     )
-    "#,
-        in_clause, bin_condition
+    "#
     );
 
     // LOGGING: Print the full query and parameters
@@ -378,7 +393,7 @@ async fn create_db_pool() -> Result<Pool<ConnectionManager>, Box<dyn std::error:
     let port: u16 = std::env::var("DATABASE_PORT")
         .unwrap_or_else(|_| "1433".to_string())
         .parse()?;
-    let database = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "WMS".to_string());
+    let database = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "GDWMS".to_string());
     let user = std::env::var("DATABASE_USER").unwrap_or_else(|_| "sa".to_string());
     let password = std::env::var("DATABASE_PASSWORD").expect("DATABASE_PASSWORD must be set");
 
@@ -525,6 +540,8 @@ async fn handle_batch_baskets(
         }
     };
 
+    let db = &state.db_prefix;
+
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
@@ -538,10 +555,9 @@ async fn handle_batch_baskets(
             basket_vendor,
             basket_purchase_order,
             is_active
-        FROM [VNWMS].[dbo].[wh_former_basket_master_data]
-        WHERE basket_no IN ({})
-        "#,
-        in_clause
+        FROM {db}.[wh_former_basket_master_data]
+        WHERE basket_no IN ({in_clause})
+        "#
     );
 
     // LOGGING: Print the full query and parameters
@@ -648,44 +664,54 @@ async fn handle_get_parameters(
         }
     };
 
+    let db = &state.db_prefix;
+
     // Determine query based on group
     let (query, param) = match group {
         "length" => (
-            r#"
+            format!(
+                r#"
             SELECT code, name 
-            FROM [VNWMS].[dbo].[wh_former_parameter_data] 
+            FROM {db}.[wh_former_parameter_data] 
             WHERE [group] = 'length' AND belong = 'former' AND is_active = 1
             ORDER BY id
-            "#,
+            "#
+            ),
             None,
         ),
         "vendor" | "brand" => (
             // Map 'brand' request to 'vendor' query logic if needed, or stick to strict group name
-            r#"
+            format!(
+                r#"
             SELECT code, name 
-            FROM [VNWMS].[dbo].[wh_former_parameter_data] 
+            FROM {db}.[wh_former_parameter_data] 
             WHERE [group] = 'vendor' AND belong = 'former' AND is_active = 1
             ORDER BY id
-            "#,
+            "#
+            ),
             None,
         ),
         "itemno" | "itemNo" => (
-            r#"
+            format!(
+                r#"
             SELECT code, name 
-            FROM [VNWMS].[dbo].[wh_former_parameter_data] 
+            FROM {db}.[wh_former_parameter_data] 
             WHERE [group] = 'itemno' AND is_active = 1
             ORDER BY id
-            "#,
+            "#
+            ),
             None,
         ),
         _ => (
             // Default query for 'size' and others
-            r#"
+            format!(
+                r#"
             SELECT code, name 
-            FROM [VNWMS].[dbo].[wh_former_parameter_data] 
+            FROM {db}.[wh_former_parameter_data] 
             WHERE [group] = @P1 
             ORDER BY id
-            "#,
+            "#
+            ),
             Some(group),
         ),
     };
@@ -778,17 +804,21 @@ async fn handle_generate_batch(
         }
     };
 
+    let db = &state.db_prefix;
+
     // 1. Check if item_no exists and get current value
     // We update atomically by incrementing value and outputting the inserted/updated value
     // Using simple transaction-like logic or direct update with output
 
     // T-SQL to update and return the new value atomically
-    let query = r#"
-        UPDATE [VNWMS].[dbo].[wh_former_parameter_data]
+    let query = format!(
+        r#"
+        UPDATE {db}.[wh_former_parameter_data]
         SET value = ISNULL(value, 0) + 1
         OUTPUT INSERTED.value
         WHERE name = @P1 AND is_active = 1
-    "#;
+    "#
+    );
 
     let mut query_builder = tiberius::Query::new(query);
     query_builder.bind(&item_no);
@@ -888,19 +918,6 @@ struct BinItem {
     w: i32,
     l: i32,
 }
-// #[derive(Debug, Serialize)]
-// struct BinData {
-//     bin_id: String,
-//     bin_name: Option<String>,
-//     area_id: Option<String>,
-// }
-
-// #[derive(Debug, Serialize)]
-// struct BinResponse {
-//     data: Vec<BinData>,
-//     success: bool,
-//     message: String,
-// }
 
 // Handle get bins request
 async fn handle_get_area_data(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -915,15 +932,19 @@ async fn handle_get_area_data(State(state): State<Arc<AppState>>) -> impl IntoRe
         }
     };
 
+    let db = &state.db_prefix;
+
     // Get former areas (same logic as Django)
-    let area_query = r#"
+    let area_query = format!(
+        r#"
         SELECT area_id, area_name, pos_x, pos_y, area_w, area_l
-        FROM [VNWMS].[dbo].[warehouse_area] a
-        JOIN [VNWMS].[dbo].[warehouse_warehouse] w ON a.warehouse_id = w.wh_code
+        FROM {db}.[warehouse_area] a
+        JOIN {db}.[warehouse_warehouse] w ON a.warehouse_id = w.wh_code
         WHERE w.wh_former_func = 1
         AND area_id LIKE '%FM%'
         AND w.wh_code NOT LIKE '%MACH%'
-    "#;
+    "#
+    );
 
     let area_rows = conn
         .simple_query(area_query)
@@ -944,27 +965,29 @@ async fn handle_get_area_data(State(state): State<Arc<AppState>>) -> impl IntoRe
         let area_l = row.get::<i32, _>("area_l").unwrap_or(0);
 
         // Get bins for this area
-        let bin_query = r#"
+        let bin_query = format!(
+            r#"
             SELECT
                 b.bin_id,
                 b.bin_name,
                 COUNT(u.basket_no) as batch_count
-            FROM [VNWMS].[dbo].[warehouse_bin] b
+            FROM {db}.[warehouse_bin] b
             LEFT JOIN (
                 SELECT fbd.bin AS bin_id, fbd.basket_no
-                FROM [VNWMS].[dbo].[wh_former_former_bin_data] fbd
+                FROM {db}.[wh_former_former_bin_data] fbd
         
                 UNION
                 SELECT frbt.from_bin AS bin_id, frbaskett.basket_no
-                FROM [VNWMS].[dbo].[wh_former_former_rack_bin_temp] frbt
-                JOIN [VNWMS].[dbo].[wh_former_former_rack_basket_temp] frbaskett
+                FROM {db}.[wh_former_former_rack_bin_temp] frbt
+                JOIN {db}.[wh_former_former_rack_basket_temp] frbaskett
                   ON frbaskett.rack_temp_id = frbt.rack_temp_id
             ) AS u
             ON u.bin_id = b.bin_id
             WHERE b.area_id = @P1
             GROUP BY b.bin_id, b.bin_name
             ORDER BY b.bin_id
-        "#;
+        "#
+        );
 
         let bin_stream = conn.query(bin_query, &[&area_id]).await.unwrap();
 
@@ -1041,89 +1064,8 @@ async fn handle_get_area_data(State(state): State<Arc<AppState>>) -> impl IntoRe
         }),
     )
 }
-// async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-//     tracing::info!("📥 Fetching bins");
-
-//     let mut conn = match state.pool.get().await {
-//         Ok(conn) => conn,
-//         Err(e) => {
-//             tracing::error!("❌ Failed to get database connection: {}", e);
-//             return (
-//                 StatusCode::SERVICE_UNAVAILABLE,
-//                 Json(BinResponse {
-//                     data: vec![],
-//                     success: false,
-//                     message: format!("Database connection error: {}", e),
-//                 }),
-//             );
-//         }
-//     };
-
-//     let query = r#"
-//         SELECT [bin_id]
-//             ,[bin_name]
-//             ,[area_id]
-//         FROM [VNWMS].[dbo].[warehouse_bin]
-//         WHERE [area_id] LIKE '%FM-%'
-//         ORDER BY bin_id
-//     "#;
-
-//     let result = conn.simple_query(query).await;
-
-//     match result {
-//         Ok(stream) => {
-//             let items = stream.into_first_result().await;
-//             match items {
-//                 Ok(rows) => {
-//                     let mut data = Vec::new();
-//                     for row in rows {
-//                         let bin = BinData {
-//                             bin_id: row.get::<&str, _>("bin_id").unwrap_or_default().to_string(),
-//                             bin_name: row.get::<&str, _>("bin_name").map(|s| s.to_string()),
-//                             area_id: row.get::<&str, _>("area_id").map(|s| s.to_string()),
-//                         };
-//                         data.push(bin);
-//                     }
-//                     tracing::info!("✅ Found {} bins", data.len());
-//                     (
-//                         StatusCode::OK,
-//                         Json(BinResponse {
-//                             data,
-//                             success: true,
-//                             message: "Success".to_string(),
-//                         }),
-//                     )
-//                 }
-//                 Err(e) => {
-//                     tracing::error!("❌ Failed to fetch results: {}", e);
-//                     (
-//                         StatusCode::INTERNAL_SERVER_ERROR,
-//                         Json(BinResponse {
-//                             data: vec![],
-//                             success: false,
-//                             message: format!("Query execution error: {}", e),
-//                         }),
-//                     )
-//                 }
-//             }
-//         }
-//         Err(e) => {
-//             tracing::error!("❌ Failed to query: {}", e);
-//             (
-//                 StatusCode::INTERNAL_SERVER_ERROR,
-//                 Json(BinResponse {
-//                     data: vec![],
-//                     success: false,
-//                     message: format!("Query error: {}", e),
-//                 }),
-//             )
-//         }
-//     }
-// }
 
 use chrono::NaiveDate;
-
-// ... (existing imports)
 
 // Machines API
 #[derive(Debug, Serialize)]
@@ -1157,13 +1099,17 @@ async fn handle_get_machines(State(state): State<Arc<AppState>>) -> impl IntoRes
         }
     };
 
-    let query = r#"
+    let db = &state.db_prefix;
+
+    let query = format!(
+        r#"
         SELECT TOP (1000) [area_id]
             ,[area_name]
-        FROM [VNWMS].[dbo].[warehouse_area]
+        FROM {db}.[warehouse_area]
         WHERE warehouse_id LIKE '%MACH%'
         ORDER BY area_name
-    "#;
+    "#
+    );
 
     // Fix borrowing issue by executing query and mapping result outside match
     let stream = match conn.simple_query(query).await {
@@ -1274,7 +1220,10 @@ async fn handle_get_stockout_forms(
         }
     };
 
-    let mut query = r#"
+    let db = &state.db_prefix;
+
+    let mut query = format!(
+        r#"
         SELECT TOP (4) [id]
             ,[stockout_form]
             ,[stockout_date]
@@ -1285,10 +1234,10 @@ async fn handle_get_stockout_forms(
             ,[stockout_return_basket]
             ,[stockout_return_former]
             ,[most_batch_used_day]
-        FROM [VNWMS].[dbo].[wh_former_former_stockout_form]
+        FROM {db}.[wh_former_former_stockout_form]
         WHERE stockout_to = @P1 AND is_confirmed = 0
     "#
-    .to_string();
+    );
 
     if !line.is_empty() {
         query.push_str(" AND stockout_form LIKE @P2");
@@ -1444,6 +1393,8 @@ async fn handle_save_batch(
         }
     };
 
+    let db = &state.db_prefix;
+
     // 1. Calculate totals
     let mut total_basket = 0;
     let mut total_former = 0;
@@ -1461,7 +1412,7 @@ async fn handle_save_batch(
     // 2. Upsert Batch Data (Former_batch_data)
     let query_batch = format!(
         r#"
-        MERGE [VNWMS].[dbo].[wh_former_former_batch_data] AS target
+        MERGE {db}.[wh_former_former_batch_data] AS target
         USING (SELECT @P1 AS batch_no) AS source
         ON (target.batch_no = source.batch_no)
         WHEN MATCHED THEN
@@ -1537,8 +1488,9 @@ async fn handle_save_batch(
     }
 
     // 3. Log Batch Data (Former_batch_data_log)
-    let query_batch_log = r#"
-        INSERT INTO [VNWMS].[dbo].[wh_former_former_batch_data_log]
+    let query_batch_log = format!(
+        r#"
+        INSERT INTO {db}.[wh_former_former_batch_data_log]
         (
             batch_no, batch_action_name, 
             batch_qty_merge, batch_basket_qty_merge, 
@@ -1561,17 +1513,13 @@ async fn handle_save_batch(
             GETDATE(), 0,
             GETDATE(), GETDATE()
         );
-    "#;
+    "#
+    );
 
     let _ = conn
         .execute(
             query_batch_log,
-            &[
-                &payload.batch_no,
-                &total_former,
-                &(total_basket as i32),
-                // &user_id, // Hardcoded to 1 for now as per previous request
-            ],
+            &[&payload.batch_no, &total_former, &(total_basket as i32)],
         )
         .await;
 
@@ -1579,13 +1527,15 @@ async fn handle_save_batch(
     for rack in &payload.racks {
         for item in &rack.items {
             // a. Update Basket Master
-            let query_basket = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_basket_master_data]
+            let query_basket = format!(
+                r#"
+                UPDATE {db}.[wh_former_basket_master_data]
                 SET is_active = 1, 
                     former_used_day = @P1, 
                     former_size = @P2
                 WHERE basket_no = @P3;
-            "#;
+            "#
+            );
             let _ = conn
                 .execute(
                     query_basket,
@@ -1598,8 +1548,9 @@ async fn handle_save_batch(
                 .await;
 
             // b. Upsert Bin Data
-            let query_bin = r#"
-                MERGE [VNWMS].[dbo].[wh_former_former_bin_data] AS target
+            let query_bin = format!(
+                r#"
+                MERGE {db}.[wh_former_former_bin_data] AS target
                 USING (SELECT @P1 AS basket_no) AS source
                 ON (target.basket_no = source.basket_no)
                 WHEN MATCHED THEN
@@ -1611,7 +1562,8 @@ async fn handle_save_batch(
                 WHEN NOT MATCHED THEN
                     INSERT (basket_no, bin, basket_former_qty, batch_no, update_at)
                     VALUES (@P1, @P2, @P3, @P4, GETDATE());
-            "#;
+            "#
+            );
             let _ = conn
                 .execute(
                     query_bin,
@@ -1620,11 +1572,13 @@ async fn handle_save_batch(
                 .await;
 
             // c. Log Bin Data
-            let query_bin_log = r#"
-                INSERT INTO [VNWMS].[dbo].[wh_former_former_bin_data_log]
+            let query_bin_log = format!(
+                r#"
+                INSERT INTO {db}.[wh_former_former_bin_data_log]
                 (batch_no, basket_no, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
                 VALUES (@P1, @P2, @P3, @P4, 'CRTE', 'stockin', @P5, 28, GETDATE());
-            "#;
+            "#
+            );
             let _ = conn
                 .execute(
                     query_bin_log,
@@ -1634,7 +1588,6 @@ async fn handle_save_batch(
                         &item.bin,
                         &item.quantity,
                         &payload.master_info.former_size,
-                        // &user_id, // Hardcoded 1
                     ],
                 )
                 .await;
@@ -1741,15 +1694,19 @@ async fn handle_stockin_save(
         }
     };
 
+    let db = &state.db_prefix;
+
     // 1. Get stockout form info (batch_no, most_batch_used_day, stockout_date)
     let (batch_no, used_day): (String, i32) = {
-        let query_get_form = r#"
+        let query_get_form = format!(
+            r#"
             SELECT batch_no, most_batch_used_day, stockout_date
-            FROM [VNWMS].[dbo].[wh_former_former_stockout_form]
+            FROM {db}.[wh_former_former_stockout_form]
             WHERE stockout_form = @P1
               AND former_size = @P2
               AND stockout_to = @P3
-        "#;
+        "#
+        );
 
         let stream = match conn
             .query(
@@ -1816,15 +1773,17 @@ async fn handle_stockin_save(
     tracing::info!("📋 Found batch_no={}, used_day={}", batch_no, used_day);
 
     // 2. Update stockout_form (return counts)
-    let query_update_form = r#"
-        UPDATE [VNWMS].[dbo].[wh_former_former_stockout_form]
+    let query_update_form = format!(
+        r#"
+        UPDATE {db}.[wh_former_former_stockout_form]
         SET stockout_return_basket = stockout_return_basket + @P1,
             stockout_return_former = stockout_return_former + @P2,
             stockin_date = CASE WHEN stockin_date IS NULL THEN GETDATE() ELSE stockin_date END
         WHERE stockout_form = @P3
           AND former_size = @P4
           AND stockout_to = @P5
-    "#;
+    "#
+    );
     let _ = conn
         .execute(
             query_update_form,
@@ -1853,13 +1812,15 @@ async fn handle_stockin_save(
             }
 
             // 3a. Update basket_master_data
-            let query_basket = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_basket_master_data]
+            let query_basket = format!(
+                r#"
+                UPDATE {db}.[wh_former_basket_master_data]
                 SET is_active = 1, 
                     former_used_day = @P1, 
                     former_size = @P2
                 WHERE basket_no = @P3;
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_basket,
@@ -1875,9 +1836,10 @@ async fn handle_stockin_save(
                 Err(e) => tracing::error!("❌ basket_master_data update failed: {}", e),
             }
 
-            // 3b. Upsert bin_data (basket_no and batch_no are string columns via db_column)
-            let query_bin = r#"
-                MERGE [VNWMS].[dbo].[wh_former_former_bin_data] AS target
+            // 3b. Upsert bin_data
+            let query_bin = format!(
+                r#"
+                MERGE {db}.[wh_former_former_bin_data] AS target
                 USING (SELECT @P1 AS basket_no) AS source
                 ON (target.basket_no = source.basket_no)
                 WHEN MATCHED THEN
@@ -1890,7 +1852,8 @@ async fn handle_stockin_save(
                 WHEN NOT MATCHED THEN
                     INSERT (basket_no, bin, basket_former_qty, batch_no, to_bin_key, update_at)
                     VALUES (@P1, @P2, @P3, @P4, '', GETDATE());
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_bin,
@@ -1912,11 +1875,13 @@ async fn handle_stockin_save(
             }
 
             // 3c. Log bin_data
-            let query_bin_log = r#"
-                INSERT INTO [VNWMS].[dbo].[wh_former_former_bin_data_log]
+            let query_bin_log = format!(
+                r#"
+                INSERT INTO {db}.[wh_former_former_bin_data_log]
                 (batch_no, basket_no, from_bin, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
                 VALUES (@P1, @P2, @P3, @P4, @P5, 'STIN', 'stockin', @P6, 28, GETDATE());
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_bin_log,
@@ -1936,11 +1901,13 @@ async fn handle_stockin_save(
             }
 
             // 3d. Update rfid_read_log
-            let query_rfid = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_rfid_read_log]
+            let query_rfid = format!(
+                r#"
+                UPDATE {db}.[wh_former_rfid_read_log]
                 SET is_used = 1
                 WHERE basket_no = @P1 AND is_used = 0;
-            "#;
+            "#
+            );
             match conn.execute(query_rfid, &[&item.basket_no]).await {
                 Ok(result) => tracing::info!("✅ rfid_read_log updated: {} rows", result.total()),
                 Err(e) => tracing::error!("❌ rfid_read_log update failed: {}", e),
@@ -1950,10 +1917,12 @@ async fn handle_stockin_save(
 
     // 4. Upsert batch_data_log
     let log_exists = {
-        let query_check_log = r#"
-            SELECT COUNT(*) as cnt FROM [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_check_log = format!(
+            r#"
+            SELECT COUNT(*) as cnt FROM {db}.[wh_former_former_batch_data_log]
             WHERE batch_no = @P1 AND batch_action_name = 'STIN' AND batch_sub_action_key = @P2
-        "#;
+        "#
+        );
         match conn.query(query_check_log, &[&batch_no, &key]).await {
             Ok(stream) => {
                 let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
@@ -1969,14 +1938,16 @@ async fn handle_stockin_save(
 
     if log_exists {
         // Update existing log
-        let query_update_log = r#"
-            UPDATE [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_update_log = format!(
+            r#"
+            UPDATE {db}.[wh_former_former_batch_data_log]
             SET batch_qty_in_wh = batch_qty_in_wh + @P1,
                 batch_qty_stockin = batch_qty_stockin + @P1,
                 batch_basket_qty_in_wh = batch_basket_qty_in_wh + @P2,
                 batch_basket_qty_stockin = batch_basket_qty_stockin + @P2
             WHERE batch_no = @P3 AND batch_action_name = 'STIN' AND batch_sub_action_key = @P4
-        "#;
+        "#
+        );
         let _ = conn
             .execute(
                 query_update_log,
@@ -1985,8 +1956,9 @@ async fn handle_stockin_save(
             .await;
     } else {
         // Insert new log with all required NOT NULL columns
-        let query_insert_log = r#"
-            INSERT INTO [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_insert_log = format!(
+            r#"
+            INSERT INTO {db}.[wh_former_former_batch_data_log]
             (batch_no, batch_action_name, batch_sub_action_key, 
              batch_qty_stockout, batch_qty_stockin, batch_qty_merge, batch_qty_split, batch_qty_in_wh, batch_qty_total,
              batch_basket_qty_stockout, batch_basket_qty_stockin, batch_basket_qty_merge, batch_basket_qty_split, batch_basket_qty_in_wh, batch_basket_qty_total,
@@ -1996,8 +1968,9 @@ async fn handle_stockin_save(
                 0, @P3, 0, 0, batch_total_former_in_wh + @P3, batch_total_former,
                 0, @P4, 0, 0, batch_total_basket_in_wh + @P4, batch_total_basket,
                 @P5, GETDATE(), GETDATE(), GETDATE(), 0
-            FROM [VNWMS].[dbo].[wh_former_former_batch_data] WHERE batch_no = @P1
-        "#;
+            FROM {db}.[wh_former_former_batch_data] WHERE batch_no = @P1
+        "#
+        );
         let _ = conn
             .execute(
                 query_insert_log,
@@ -2007,15 +1980,17 @@ async fn handle_stockin_save(
     }
 
     // 5. Update batch_data
-    let query_update_batch = r#"
-        UPDATE [VNWMS].[dbo].[wh_former_former_batch_data]
+    let query_update_batch = format!(
+        r#"
+        UPDATE {db}.[wh_former_former_batch_data]
         SET batch_total_basket_in_wh = batch_total_basket_in_wh + @P1,
             batch_total_former_in_wh = batch_total_former_in_wh + @P2,
             former_used_day = @P3,
             update_by_id = 28,
             update_at = GETDATE()
         WHERE batch_no = @P4
-    "#;
+    "#
+    );
     let _ = conn
         .execute(
             query_update_batch,
@@ -2128,15 +2103,19 @@ async fn handle_stockout_save(
         }
     };
 
+    let db = &state.db_prefix;
+
     // 1. Get stockout form info (batch_no, used_day) If not found -> derive batch from basket list
     let (batch_no, used_day, is_exist): (String, i32, bool) = {
-        let query_get_form = r#"
+        let query_get_form = format!(
+            r#"
         SELECT batch_no, most_batch_used_day
-        FROM [VNWMS].[dbo].[wh_former_former_stockout_form]
+        FROM {db}.[wh_former_former_stockout_form]
         WHERE stockout_form = @P1
           AND former_size = @P2
           AND stockout_to = @P3
-    "#;
+    "#
+        );
 
         let rows: Vec<_> = {
             let stream = match conn
@@ -2195,7 +2174,7 @@ async fn handle_stockout_save(
             let sql = format!(
                 r#"
                     SELECT TOP 1 batch_no, COUNT(*) as cnt
-                    FROM [VNWMS].[dbo].[wh_former_former_bin_data]
+                    FROM {db}.[wh_former_former_bin_data]
                     WHERE basket_no IN ({})
                     GROUP BY batch_no
                     ORDER BY cnt DESC
@@ -2230,11 +2209,13 @@ async fn handle_stockout_save(
 
             // get used_day from batch table
             let base_used_day: i32 = {
-                let query_batch = r#"
+                let query_batch = format!(
+                    r#"
                 SELECT former_used_day
-                FROM [VNWMS].[dbo].[wh_former_former_batch_data]
+                FROM {db}.[wh_former_former_batch_data]
                 WHERE batch_no = @P1
-            "#;
+            "#
+                );
 
                 let stream = conn.query(query_batch, &[&derived_batch]).await.unwrap();
                 let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
@@ -2262,8 +2243,9 @@ async fn handle_stockout_save(
     //
     if is_exist {
         // UPDATE
-        let update_sql = r#"
-        UPDATE [VNWMS].[dbo].[wh_former_former_stockout_form]
+        let update_sql = format!(
+            r#"
+        UPDATE {db}.[wh_former_former_stockout_form]
         SET stockout_date = GETDATE(),
             stockout_action = @P8,
             stockout_to = @P7,
@@ -2276,7 +2258,8 @@ async fn handle_stockout_save(
             most_batch_used_day = @P4,
             update_at = GETDATE()
         WHERE stockout_form = @P5
-    "#;
+    "#
+        );
 
         let _ = conn
             .execute(
@@ -2298,8 +2281,9 @@ async fn handle_stockout_save(
             .await;
     } else {
         // INSERT
-        let insert_sql = r#"
-        INSERT INTO [VNWMS].[dbo].[wh_former_former_stockout_form] (
+        let insert_sql = format!(
+            r#"
+        INSERT INTO {db}.[wh_former_former_stockout_form] (
             stockout_form,
             stockout_date,
             stockout_action,
@@ -2323,7 +2307,8 @@ async fn handle_stockout_save(
             @P7, @P8,
             0, 0
         )
-    "#;
+    "#
+        );
 
         let _ = conn
             .execute(
@@ -2359,13 +2344,15 @@ async fn handle_stockout_save(
             }
 
             // 3a. Update basket_master_data
-            let query_basket = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_basket_master_data]
+            let query_basket = format!(
+                r#"
+                UPDATE {db}.[wh_former_basket_master_data]
                 SET is_active = 1, 
                     former_used_day = @P1, 
                     former_size = @P2
                 WHERE basket_no = @P3;
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_basket,
@@ -2381,9 +2368,10 @@ async fn handle_stockout_save(
                 Err(e) => tracing::error!("❌ basket_master_data update failed: {}", e),
             }
 
-            // 3b. Upsert bin_data (basket_no and batch_no are string columns via db_column)
-            let query_bin = r#"
-                MERGE [VNWMS].[dbo].[wh_former_former_bin_data] AS target
+            // 3b. Upsert bin_data
+            let query_bin = format!(
+                r#"
+                MERGE {db}.[wh_former_former_bin_data] AS target
                 USING (SELECT @P1 AS basket_no) AS source
                 ON (target.basket_no = source.basket_no)
                 WHEN MATCHED THEN
@@ -2396,7 +2384,8 @@ async fn handle_stockout_save(
                 WHEN NOT MATCHED THEN
                     INSERT (basket_no, bin, basket_former_qty, batch_no, to_bin_key, update_at)
                     VALUES (@P1, @P2, @P3, @P4, '', GETDATE());
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_bin,
@@ -2418,11 +2407,13 @@ async fn handle_stockout_save(
             }
 
             // 3c. Log bin_data
-            let query_bin_log = r#"
-                INSERT INTO [VNWMS].[dbo].[wh_former_former_bin_data_log]
+            let query_bin_log = format!(
+                r#"
+                INSERT INTO {db}.[wh_former_former_bin_data_log]
                 (batch_no, basket_no, from_bin, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
                 VALUES (@P1, @P2, @P3, @P4, @P5, 'STIN', 'stockin', @P6, 28, GETDATE());
-            "#;
+            "#
+            );
             match conn
                 .execute(
                     query_bin_log,
@@ -2442,11 +2433,13 @@ async fn handle_stockout_save(
             }
 
             // 3d. Update rfid_read_log
-            let query_rfid = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_rfid_read_log]
+            let query_rfid = format!(
+                r#"
+                UPDATE {db}.[wh_former_rfid_read_log]
                 SET is_used = 1
                 WHERE basket_no = @P1 AND is_used = 0;
-            "#;
+            "#
+            );
             match conn.execute(query_rfid, &[&item.basket_no]).await {
                 Ok(result) => tracing::info!("✅ rfid_read_log updated: {} rows", result.total()),
                 Err(e) => tracing::error!("❌ rfid_read_log update failed: {}", e),
@@ -2456,10 +2449,12 @@ async fn handle_stockout_save(
 
     // 4. Upsert batch_data_log
     let log_exists = {
-        let query_check_log = r#"
-            SELECT COUNT(*) as cnt FROM [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_check_log = format!(
+            r#"
+            SELECT COUNT(*) as cnt FROM {db}.[wh_former_former_batch_data_log]
             WHERE batch_no = @P1 AND batch_action_name = 'STOU' AND batch_sub_action_key = @P2
-        "#;
+        "#
+        );
         match conn.query(query_check_log, &[&batch_no, &key]).await {
             Ok(stream) => {
                 let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
@@ -2475,8 +2470,9 @@ async fn handle_stockout_save(
 
     if log_exists {
         // Update existing log
-        let query_update_log = r#"
-            UPDATE [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_update_log = format!(
+            r#"
+            UPDATE {db}.[wh_former_former_batch_data_log]
             SET batch_qty_in_wh = batch_qty_in_wh - @P1,
                 batch_change_day = GETDATE(),
                 batch_stockout_to = @P5,
@@ -2484,7 +2480,8 @@ async fn handle_stockout_save(
                 batch_basket_qty_in_wh = batch_basket_qty_in_wh - @P2,
                 batch_basket_qty_stockout = batch_basket_qty_stockout + @P2
             WHERE batch_no = @P3 AND batch_action_name = 'STOU' AND batch_sub_action_key = @P4
-        "#;
+        "#
+        );
         let _ = conn
             .execute(
                 query_update_log,
@@ -2499,8 +2496,9 @@ async fn handle_stockout_save(
             .await;
     } else {
         // Insert new log with all required NOT NULL columns
-        let query_insert_log = r#"
-            INSERT INTO [VNWMS].[dbo].[wh_former_former_batch_data_log]
+        let query_insert_log = format!(
+            r#"
+            INSERT INTO {db}.[wh_former_former_batch_data_log]
             (batch_no, batch_action_name, batch_sub_action_key, 
              batch_qty_stockout, batch_qty_stockin, batch_qty_merge, batch_qty_split, batch_qty_in_wh, batch_qty_total,
              batch_basket_qty_stockout, batch_basket_qty_stockin, batch_basket_qty_merge, batch_basket_qty_split, batch_basket_qty_in_wh, batch_basket_qty_total,
@@ -2510,8 +2508,9 @@ async fn handle_stockout_save(
                 @P3, 0, 0, 0, batch_total_former_in_wh - @P3, batch_total_former,
                 @P4, 0, 0, 0, batch_total_basket_in_wh - @P4, batch_total_basket,
                 @P5, GETDATE(), GETDATE(), GETDATE(), 0, @P6
-            FROM [VNWMS].[dbo].[wh_former_former_batch_data] WHERE batch_no = @P1
-        "#;
+            FROM {db}.[wh_former_former_batch_data] WHERE batch_no = @P1
+        "#
+        );
         let _ = conn
             .execute(
                 query_insert_log,
@@ -2528,15 +2527,17 @@ async fn handle_stockout_save(
     }
 
     // 5. Update batch_data
-    let query_update_batch = r#"
-        UPDATE [VNWMS].[dbo].[wh_former_former_batch_data]
+    let query_update_batch = format!(
+        r#"
+        UPDATE {db}.[wh_former_former_batch_data]
         SET batch_total_basket_in_wh = batch_total_basket_in_wh - @P1,
             batch_total_former_in_wh = batch_total_former_in_wh - @P2,
             former_used_day = @P3,
             update_by_id = 28,
             update_at = GETDATE()
         WHERE batch_no = @P4
-    "#;
+    "#
+    );
     let _ = conn
         .execute(
             query_update_batch,
@@ -2636,6 +2637,8 @@ async fn handle_empty_stock_save(
         }
     };
 
+    let db = &state.db_prefix;
+
     // 3. Determine target bin (FIXED TYPE)
     let target_bin: String = if payload.action.to_lowercase() == "in" {
         "X".to_string()
@@ -2649,13 +2652,15 @@ async fn handle_empty_stock_save(
             tracing::info!("🔄 Processing basket_no={}", item.basket_no);
 
             // 4a. Update bin_data
-            let query_bin = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_former_bin_data]
+            let query_bin = format!(
+                r#"
+                UPDATE {db}.[wh_former_former_bin_data]
                 SET bin = @P1,
                     basket_former_qty = 0,
                     update_at = GETDATE()
                 WHERE basket_no = @P2
-            "#;
+            "#
+            );
 
             if let Err(e) = conn
                 .execute(query_bin, &[&target_bin, &item.basket_no])
@@ -2674,11 +2679,13 @@ async fn handle_empty_stock_save(
             }
 
             // 4b. Update basket_master_data
-            let query_master = r#"
-                UPDATE [VNWMS].[dbo].[wh_former_basket_master_data]
+            let query_master = format!(
+                r#"
+                UPDATE {db}.[wh_former_basket_master_data]
                 SET former_size = NULL
                 WHERE basket_no = @P1
-            "#;
+            "#
+            );
 
             if let Err(e) = conn.execute(query_master, &[&item.basket_no]).await {
                 tracing::error!("❌ basket_master_data update failed: {}", e);
@@ -2721,7 +2728,7 @@ struct BinListResponse {
 async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("📦 Get bin list request");
 
-    // 1️⃣ Get connection
+    // 1. Get connection
     let mut conn = match state.pool.get().await {
         Ok(c) => c,
         Err(e) => {
@@ -2737,17 +2744,21 @@ async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoRespons
         }
     };
 
-    // 2️⃣ Query
-    let query = r#"
+    let db = &state.db_prefix;
+
+    // 2. Query
+    let query = format!(
+        r#"
         SELECT DISTINCT bin
-        FROM [VNWMS].[dbo].[wh_former_former_bin_data]
+        FROM {db}.[wh_former_former_bin_data]
         WHERE bin NOT LIKE '%NBR%'
           AND bin <> 'X'
           AND bin IS NOT NULL
         ORDER BY bin
-    "#;
+    "#
+    );
 
-    // 3️⃣ Execute and collect rows (NO STREAM, NO EXTRA CRATE)
+    // 3. Execute and collect rows
     let rows = match conn.query(query, &[]).await {
         Ok(result) => match result.into_first_result().await {
             Ok(rows) => rows,
@@ -2776,7 +2787,7 @@ async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoRespons
         }
     };
 
-    // 4️⃣ Convert rows to Vec<String>
+    // 4. Convert rows to Vec<String>
     let bins: Vec<String> = rows
         .into_iter()
         .filter_map(|row| row.get::<&str, _>("bin").map(|b| b.to_string()))
@@ -2784,13 +2795,340 @@ async fn handle_get_bins(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
     tracing::info!("✅ Retrieved {} bins", bins.len());
 
-    // 5️⃣ Return response
+    // 5. Return response
     (
         StatusCode::OK,
         Json(BinListResponse {
             success: true,
             message: "Bins retrieved successfully".to_string(),
             bins,
+        }),
+    )
+}
+
+// ==================== FORMER MOVING SAVE ====================
+
+#[derive(Default)]
+struct BatchMove {
+    basket_qty: i32,
+    former_qty: i32,
+}
+
+async fn handle_former_moving_save(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EmptyStockSaveRequest>,
+) -> impl IntoResponse {
+    tracing::info!("🚚 Former Moving request received");
+
+    // =========================
+    // CALCULATE TOTAL
+    // =========================
+
+    let total_baskets: i32 = payload.racks.iter().map(|r| r.items.len() as i32).sum();
+
+    let total_formers: i32 = payload
+        .racks
+        .iter()
+        .flat_map(|r| r.items.iter())
+        .map(|i| i.basket_former_qty)
+        .sum();
+
+    // =========================
+    // GET DB CONNECTION
+    // =========================
+
+    let mut conn = match state.pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("❌ DB connection error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(EmptyStockSaveResponse {
+                    success: false,
+                    message: format!("Database connection error: {}", e),
+                    total_baskets: None,
+                    total_formers: None,
+                }),
+            );
+        }
+    };
+
+    let db = &state.db_prefix;
+
+    // ==========================================
+    // COLLECT PHASE (GROUP BY old_batch,new_batch)
+    // ==========================================
+
+    let mut batch_moves: HashMap<(String, String), BatchMove> = HashMap::new();
+
+    for rack in &payload.racks {
+        let new_bin = &rack.bin;
+
+        if rack.items.is_empty() {
+            continue;
+        }
+
+        // Get old batch using first basket
+        let first_basket = &rack.items[0].basket_no;
+
+        let query_old = format!(
+            r#"
+            SELECT TOP 1 batch_no
+            FROM {db}.[wh_former_former_bin_data]
+            WHERE basket_no = @P1
+        "#
+        );
+
+        let stream = match conn.query(query_old, &[first_basket]).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("❌ Query old batch failed: {}", e);
+                continue;
+            }
+        };
+
+        let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
+
+        if rows.is_empty() {
+            continue;
+        }
+
+        let old_batch: String = rows[0].get::<&str, _>("batch_no").unwrap_or("").to_string();
+
+        // Get new batch from bin
+        let query_new = format!(
+            r#"
+            SELECT TOP 1 batch_no
+            FROM {db}.[wh_former_former_bin_data]
+            WHERE bin = @P1
+        "#
+        );
+
+        let stream = match conn.query(query_new, &[new_bin]).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("❌ Query new batch failed: {}", e);
+                continue;
+            }
+        };
+
+        let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
+
+        let new_batch: String = if rows.is_empty() {
+            "".to_string()
+        } else {
+            rows[0].get::<&str, _>("batch_no").unwrap_or("").to_string()
+        };
+
+        // Only process when new_batch exists
+        if new_batch.is_empty() {
+            continue;
+        }
+
+        let basket_qty = rack.items.len() as i32;
+        let former_qty: i32 = rack.items.iter().map(|i| i.basket_former_qty).sum();
+
+        let key = (old_batch.clone(), new_batch.clone());
+
+        let entry = batch_moves.entry(key).or_default();
+        entry.basket_qty += basket_qty;
+        entry.former_qty += former_qty;
+
+        // =========================
+        // UPDATE BIN
+        // =========================
+
+        for item in &rack.items {
+            let query_update_bin = format!(
+                r#"
+                UPDATE {db}.[wh_former_former_bin_data]
+                SET
+                    bin = @P1,
+                    update_at = GETDATE()
+                WHERE basket_no = @P2
+            "#
+            );
+
+            let _ = conn
+                .execute(query_update_bin, &[new_bin, &item.basket_no])
+                .await;
+        }
+    }
+
+    // ==========================================
+    // APPLY PHASE (UPDATE BATCH + INSERT LOG)
+    // ==========================================
+
+    for ((old_batch, new_batch), data) in batch_moves {
+        if old_batch == new_batch {
+            continue;
+        }
+
+        let basket_qty = data.basket_qty;
+        let former_qty = data.former_qty;
+
+        // ---------- UPDATE OLD BATCH ----------
+
+        let query_old_batch = format!(
+            r#"
+            UPDATE {db}.[wh_former_former_batch_data]
+            SET
+                batch_total_basket = batch_total_basket - @P1,
+                batch_total_former = batch_total_former - @P2,
+                batch_total_basket_in_wh = batch_total_basket_in_wh - @P1,
+                batch_total_former_in_wh = batch_total_former_in_wh - @P2,
+                update_at = GETDATE()
+            WHERE batch_no = @P3
+        "#
+        );
+
+        let _ = conn
+            .execute(query_old_batch, &[&basket_qty, &former_qty, &old_batch])
+            .await;
+
+        // ---------- UPDATE NEW BATCH ----------
+
+        let query_new_batch = format!(
+            r#"
+            UPDATE {db}.[wh_former_former_batch_data]
+            SET
+                batch_total_basket = batch_total_basket + @P1,
+                batch_total_former = batch_total_former + @P2,
+                batch_total_basket_in_wh = batch_total_basket_in_wh + @P1,
+                batch_total_former_in_wh = batch_total_former_in_wh + @P2,
+                update_at = GETDATE()
+            WHERE batch_no = @P3
+        "#
+        );
+
+        let _ = conn
+            .execute(query_new_batch, &[&basket_qty, &former_qty, &new_batch])
+            .await;
+
+        // ---------- INSERT OLD BATCH LOG ----------
+
+        let query_old_batch_log = format!(
+            r#"
+            INSERT INTO {db}.[wh_former_former_batch_data_log]
+            (
+                batch_no,
+                batch_action_name,
+                batch_qty_split,
+                batch_qty_total,
+                batch_qty_in_wh,
+                batch_used_day,
+                batch_change_day,
+                batch_qty_merge,
+                batch_qty_stockout,
+                batch_basket_qty_in_wh,
+                batch_basket_qty_merge,
+                batch_basket_qty_split,
+                batch_basket_qty_stockout,
+                batch_basket_qty_total,
+                create_at,
+                update_at,
+                batch_basket_qty_stockin,
+                batch_qty_stockin,
+                is_confirmed
+            )
+            SELECT
+                batch_no,
+                'MOUT',
+                0,
+                batch_qty_total - @P1,
+                batch_qty_in_wh - @P1,
+                batch_used_day,
+                GETDATE(),
+                0,
+                0,
+                batch_basket_qty_in_wh - @P2,
+                0,
+                0,
+                0,
+                batch_basket_qty_total - @P2,
+                GETDATE(),
+                GETDATE(),
+                0,
+                0,
+                0
+            FROM {db}.[wh_former_former_batch_data]
+            WHERE batch_no = @P3
+        "#
+        );
+
+        let _ = conn
+            .execute(query_old_batch_log, &[&former_qty, &basket_qty, &old_batch])
+            .await;
+
+        // ---------- INSERT NEW BATCH LOG ----------
+
+        let query_new_batch_log = format!(
+            r#"
+            INSERT INTO {db}.[wh_former_former_batch_data_log]
+            (
+                batch_no,
+                batch_action_name,
+                batch_qty_split,
+                batch_qty_total,
+                batch_qty_in_wh,
+                batch_used_day,
+                batch_change_day,
+                batch_qty_merge,
+                batch_qty_stockout,
+                batch_basket_qty_in_wh,
+                batch_basket_qty_merge,
+                batch_basket_qty_split,
+                batch_basket_qty_stockout,
+                batch_basket_qty_total,
+                create_at,
+                update_at,
+                batch_basket_qty_stockin,
+                batch_qty_stockin,
+                is_confirmed
+            )
+            SELECT
+                batch_no,
+                'MOIN',
+                0,
+                batch_qty_total + @P1,
+                batch_qty_in_wh + @P1,
+                batch_used_day,
+                GETDATE(),
+                0,
+                0,
+                batch_basket_qty_in_wh + @P2,
+                0,
+                0,
+                0,
+                batch_basket_qty_total + @P2,
+                GETDATE(),
+                GETDATE(),
+                0,
+                0,
+                0
+            FROM {db}.[wh_former_former_batch_data]
+            WHERE batch_no = @P3
+        "#
+        );
+
+        let _ = conn
+            .execute(query_new_batch_log, &[&former_qty, &basket_qty, &new_batch])
+            .await;
+    }
+
+    tracing::info!(
+        "✅ Former Moving completed: {} baskets / {} formers",
+        total_baskets,
+        total_formers
+    );
+
+    (
+        StatusCode::OK,
+        Json(EmptyStockSaveResponse {
+            success: true,
+            message: "Former Moving saved successfully".to_string(),
+            total_baskets: Some(total_baskets),
+            total_formers: Some(total_formers),
         }),
     )
 }

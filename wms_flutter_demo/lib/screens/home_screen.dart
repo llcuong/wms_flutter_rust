@@ -37,57 +37,90 @@ class HomeScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
+
             _buildQuickActionCard(
               context,
               title: 'Former Master Data',
               subtitle: 'Manage former specifications',
               icon: Icons.dataset,
-              color: const Color(0xFF8B5CF6), // Purple
+              color: const Color(0xFF7C3AED), // Purple
               route: AppRouter.formerMasterData,
             ),
+
             const SizedBox(height: 12),
+
             _buildQuickActionCard(
               context,
               title: 'Former Stock In',
               subtitle: 'Scan and record incoming stock',
               icon: Icons.login,
-              color: AppColors.primary,
+              color: const Color(0xFF16A34A), // Green
               route: AppRouter.formerStockIn,
             ),
+
             const SizedBox(height: 12),
+
             _buildQuickActionCard(
               context,
               title: 'Former Stock Out',
               subtitle: 'Process outgoing stock',
               icon: Icons.logout,
-              color: AppColors.success,
+              color: const Color(0xFFDC2626), // Red
               route: AppRouter.formerStockOut,
             ),
+
             const SizedBox(height: 12),
+
             _buildQuickActionCard(
               context,
               title: 'Empty Former Stock In',
               subtitle: 'Scan and record incoming empty basket stock',
-              icon: Icons.login,
-              color: AppColors.primary,
+              icon: Icons.input,
+              color: const Color(0xFF0D9488), // Teal
               route: AppRouter.emptyFormerStockIn,
             ),
+
             const SizedBox(height: 12),
+
             _buildQuickActionCard(
               context,
               title: 'Empty Former Stock Out',
               subtitle: 'Process outgoing empty basket stock',
-              icon: Icons.logout,
-              color: AppColors.success,
+              icon: Icons.output,
+              color: const Color(0xFFEA580C), // Deep Orange
               route: AppRouter.emptyFormerStockOut,
             ),
+
             const SizedBox(height: 12),
+
+            _buildQuickActionCard(
+              context,
+              title: 'Former Moving',
+              subtitle: 'Moving formers to other bin location',
+              icon: Icons.swap_horiz,
+              color: const Color(0xFFF59E0B), // Orange
+              route: AppRouter.formerMoving,
+            ),
+
+            const SizedBox(height: 12),
+
+            _buildQuickActionCard(
+              context,
+              title: 'Former Cleaning',
+              subtitle: 'Move formers to cleaning area',
+              icon: Icons.cleaning_services,
+              color: const Color(0xFF2563EB), // Blue
+              route: AppRouter.formerCleaning,
+            ),
+
+            const SizedBox(height: 12),
+
             _buildQuickActionCard(
               context,
               title: 'RFID Test',
               subtitle: 'Test RFID scanning functionality',
               icon: Icons.sensors,
-              color: AppColors.warning,
+              color: const Color(0xFFFACC15), // Amber
               route: AppRouter.rfidTest,
             ),
           ],

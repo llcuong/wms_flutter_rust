@@ -51,10 +51,10 @@ class CustomBottomNav extends StatelessWidget {
               ),
               _buildNavItem(
                 context,
-                icon: Icons.sensors,
-                label: 'RFID',
+                icon: Icons.swap_horiz,
+                label: 'Moving',
                 index: 3,
-                route: AppRouter.rfidTest,
+                route: AppRouter.formerMoving,
               ),
             ],
           ),

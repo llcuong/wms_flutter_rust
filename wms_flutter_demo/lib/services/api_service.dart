@@ -1019,3 +1019,109 @@ extension ApiServiceEmptyStock on ApiService {
     }
   }
 }
+
+// ==================== FORMER MOVING SAVE ====================
+
+class FormerMovingSaveResponse {
+  final bool success;
+  final String message;
+  final int? totalBaskets;
+  final int? totalFormers;
+
+  FormerMovingSaveResponse({
+    required this.success,
+    required this.message,
+    this.totalBaskets,
+    this.totalFormers,
+  });
+
+  factory FormerMovingSaveResponse.fromJson(Map<String, dynamic> json) {
+    return FormerMovingSaveResponse(
+      success: json['success'] ?? false,
+      message: json['message'] ?? '',
+      totalBaskets: json['total_baskets'],
+      totalFormers: json['total_formers'],
+    );
+  }
+}
+
+class FormerMovingRackData {
+  final int rackNo;
+  final String bin;
+  final List<FormerMovingItemData> items;
+
+  FormerMovingRackData({
+    required this.rackNo,
+    required this.bin,
+    required this.items,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'rack_no': rackNo,
+    'bin': bin,
+    'items': items.map((e) => e.toJson()).toList(),
+  };
+}
+
+class FormerMovingItemData {
+  final String tagId;
+  final String basketNo;
+  final int basketFormerQty;
+
+  FormerMovingItemData({
+    required this.tagId,
+    required this.basketNo,
+    required this.basketFormerQty,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'tag_id': tagId,
+    'basket_no': basketNo,
+    'basket_former_qty': basketFormerQty,
+  };
+}
+
+extension ApiServiceFormerMoving on ApiService {
+  /// Save Empty Stock data to backend
+  static Future<FormerMovingSaveResponse> saveFormerMoving({
+    required String selectedMachine,
+    required String action,
+    required List<FormerMovingRackData> racks,
+  }) async {
+    try {
+      final url = Uri.parse(
+          '${AppStrings.apiBaseUrl}/wh_former/moving/save');
+
+      final body = {
+        'selected_machine': selectedMachine,
+        'action': action,
+        'racks': racks.map((r) => r.toJson()).toList(),
+      };
+
+      final response = await http
+          .post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      )
+          .timeout(const Duration(seconds: 30));
+
+      print("Former Moving Response: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return FormerMovingSaveResponse.fromJson(jsonData);
+      } else {
+        return FormerMovingSaveResponse(
+          success: false,
+          message: 'Server error: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      return FormerMovingSaveResponse(
+        success: false,
+        message: 'Network error: $e',
+      );
+    }
+  }
+}

@@ -31,7 +31,7 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
   bool isInitialized = false;
   bool isConnected = false;
   ScannerStatus scannerStatus = ScannerStatus.disconnected;
-  BasketMode _basketMode = BasketMode.full;
+  BasketMode _basketMode = BasketMode.empty;
 
   // Machine & Line Selection
   List<MachineData> _machines = [];
