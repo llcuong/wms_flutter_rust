@@ -37,7 +37,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   BasketMode _basketMode = BasketMode.full;
 
   // Selected Action
-  CleaningAction? _selectedAction;
+  CleaningActionWithSource? _selectedAction;
 
   final _stockFormController = TextEditingController();
 
@@ -108,7 +108,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       _selectedAction = action;
     });
 
-    if (action == CleaningAction.fromWarehouse) {
+    if (action != CleaningAction.fromProduction) {
       _generateStockForm();
     }
 
@@ -133,7 +133,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       _stockFormController.clear();
     });
 
-    if (action == CleaningAction.fromWarehouse) {
+    if (action != CleaningAction.fromProduction) {
       _generateStockForm();
     }
 
@@ -147,12 +147,12 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     final dd = now.day.toString().padLeft(2, '0');
 
     String stockForm;
-    String prefix = '';
+    String prefix = 'CL';
 
-    if (_selectedAction == CleaningAction.fromProduction) {
-      prefix = 'PR';
-    } else if (_selectedAction == CleaningAction.fromWarehouse) {
+    if (_selectedAction == CleaningAction.fromWarehouse) {
       prefix = 'CL';
+    } else {
+      prefix = 'VC';
     }
 
     final random = Random();
@@ -323,10 +323,10 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
     try {
       List<BasketData> baskets = [];
-      if (_selectedAction == CleaningAction.fromWarehouse) {
-        baskets = await ApiService.getBasketsStockOutBatch(batchIds);
-      } else if (_selectedAction == CleaningAction.fromProduction) {
+      if (_selectedAction?.isFromProduction == true) {
         baskets = await ApiService.getBasketsStockInBatch(batchIds);
+      } else {
+        baskets = await ApiService.getBasketsStockOutBatch(batchIds);
       }
 
       if (!mounted) return;
@@ -583,7 +583,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   String get _rackCacheKey {
-    return 'empty_stockout_${_selectedMachine}_rack_temp';
+    return 'former_cleaning_${_selectedAction?.code}_rack_temp';
   }
 
   Future<void> _saveRackCache() async {
@@ -851,47 +851,27 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Stock Form section — only shown for fromWarehouse
-        if (_selectedAction == CleaningAction.fromWarehouse) ...[
-          // Labels Row
-          Row(
-            children: [
-              const Expanded(
-                flex: 7,
-                child: Text(
-                  'STOCK FORM',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textSecondary,
-                    letterSpacing: 1.2,
-                  ),
-                ),
+        // Stock Form section — only shown when action != fromProduction
+        if (_selectedAction != CleaningAction.fromProduction) ...[
+          // Label
+          const Padding(
+            padding: EdgeInsets.only(left: 4, bottom: 8),
+            child: Text(
+              'STOCK FORM',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textSecondary,
+                letterSpacing: 1.2,
               ),
-              const SizedBox(width: 12),
-              const Expanded(
-                flex: 3,
-                child: Text(
-                  'SIZE',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textSecondary,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-          const SizedBox(height: 8),
 
-          // Input Fields Row (Stock Form + Size Dropdown)
+          // Form Row with TextField and Icon Button
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Stock Form TextField (7 parts)
+              // Stock Form TextField (takes remaining space)
               Expanded(
-                flex: 7,
                 child: TextField(
                   controller: _stockFormController,
                   style: const TextStyle(
@@ -932,135 +912,32 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
               const SizedBox(width: 12),
 
-              // Size Dropdown (3 parts)
-              Expanded(
-                flex: 3,
+              // Regenerate Icon Button (fixed width)
+              SizedBox(
+                width: 48,
+                height: 48,
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.slate200),
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      hint: const Text('Select Size'),
-                      value: _selectedSize,
-                      items: const [
-                        'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'
-                      ].map((size) {
-                        return DropdownMenuItem(
-                          value: size,
-                          child: Text(
-                            size,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedSize = value!;
-                        });
-                      },
-                      icon: const Icon(
-                        Icons.keyboard_arrow_down,
-                        color: AppColors.textSecondary,
-                      ),
+                    border: Border.all(
+                      color: AppColors.primary.withOpacity(0.4),
+                      width: 1.5,
                     ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: IconButton(
+                    onPressed: _generateStockForm,
+                    icon: const Icon(
+                      Icons.refresh,
+                      size: 22,
+                      color: AppColors.primary,
+                    ),
+                    tooltip: 'Regenerate Form',
+                    padding: EdgeInsets.zero,
                   ),
                 ),
               ),
             ],
           ),
-
-          const SizedBox(height: 12),
-
-          // Regenerate Button Row (full width)
-          SizedBox(
-            width: double.infinity,
-            height: 44,
-            child: OutlinedButton.icon(
-              onPressed: _generateStockForm,
-              icon: const Icon(
-                Icons.refresh,
-                size: 18,
-                color: AppColors.primary,
-              ),
-              label: const Text(
-                'Regenerate Form',
-                style: TextStyle(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(
-                  color: AppColors.primary.withOpacity(0.4),
-                  width: 1.5,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-        ],
-
-        // If not fromWarehouse, show only size dropdown
-        if (_selectedAction != CleaningAction.fromWarehouse) ...[
-          const Text(
-            'FORMER SIZE',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textSecondary,
-              letterSpacing: 1.2,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.slate200),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                isExpanded: true,
-                hint: const Text('Select Former Size'),
-                value: _selectedSize,
-                items: const [
-                  'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'
-                ].map((size) {
-                  return DropdownMenuItem(
-                    value: size,
-                    child: Text(
-                      size,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                  );
-                }).toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _selectedSize = value!;
-                  });
-                },
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
         ],
       ],
     );
@@ -1701,68 +1578,31 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
                         if (confirm != true) return;
 
-                        dynamic response;
+                        final apiRacks = _racks
+                            .map(
+                              (rack) => FormerCleaningRackData(
+                            rackNo: rack.rackNo,
+                            bin: rack.bin,
+                            items: rack.items.map((item) {
+                              final bNo = item.basketData?.basketNo;
+                              return FormerCleaningItemData(
+                                tagId: item.id,
+                                basketNo: (bNo != null && bNo.isNotEmpty)
+                                    ? bNo
+                                    : item.id,
+                                basketFormerQty: item.quantity,
+                              );
+                            }).toList(),
+                          ),
+                        )
+                            .toList();
 
-                        if (_selectedAction == CleaningAction.fromWarehouse) {
-                          final apiRacks = _racks
-                              .map(
-                                (rack) => StockInRackData(
-                                  rackNo: rack.rackNo,
-                                  bin: rack.bin,
-                                  items: rack.items.map((item) {
-                                    final bNo = item.basketData?.basketNo;
-                                    return StockInItemData(
-                                      tagId: item.id,
-                                      basketNo: (bNo != null && bNo.isNotEmpty)
-                                          ? bNo
-                                          : item.id,
-                                      basketFormerQty: item.quantity,
-                                    );
-                                  }).toList(),
-                                ),
-                              )
-                              .toList();
-
-                          response = await ApiServiceStockOut.saveStockOut(
-                            stockoutForm: _stockFormController.text,
-                            formerSize: _selectedSize,
-                            selectedMachine: '',
-                            stockoutFrom: '',
-                            action: 'to_cleaning',
-                            racks: apiRacks,
-                          );
-                        } else {
-                          final apiRacks = _racks
-                              .map(
-                                (rack) => FormerMovingRackData(
-                              rackNo: rack.rackNo,
-                              bin: rack.bin,
-                              items: rack.items.map((item) {
-                                final bNo = item.basketData?.basketNo;
-                                return FormerMovingItemData(
-                                  tagId: item.id,
-                                  basketNo: (bNo != null && bNo.isNotEmpty)
-                                      ? bNo
-                                      : item.id,
-                                  basketFormerQty: item.quantity,
-                                );
-                              }).toList(),
-                            ),
-                          )
-                              .toList();
-
-                          response = await ApiServiceFormerMoving.saveFormerMoving(
-                            selectedMachine: '',
-                            action: '',
-                            racks: apiRacks,
-                          );
-                        }
-
-                        // final response = await ApiServiceEmptyStock.saveEmptyStock(
-                        //   selectedMachine: _selectedMachine!.areaId,
-                        //   action: 'out',
-                        //   racks: apiRacks,
-                        // );
+                        final response = await ApiServiceFormerCleaning.saveFormerCleaning(
+                          stockoutForm: _stockFormController.text,
+                          action: _selectedAction!.code,
+                          source: _selectedAction!.source.name,
+                          racks: apiRacks,
+                        );
 
                         if (mounted) AppModal.hideLoading(context);
 

@@ -1125,3 +1125,111 @@ extension ApiServiceFormerMoving on ApiService {
     }
   }
 }
+
+// ==================== FORMER CLEANING SAVE ====================
+
+class FormerCleaningSaveResponse {
+  final bool success;
+  final String message;
+  final int? totalBaskets;
+  final int? totalFormers;
+
+  FormerCleaningSaveResponse({
+    required this.success,
+    required this.message,
+    this.totalBaskets,
+    this.totalFormers,
+  });
+
+  factory FormerCleaningSaveResponse.fromJson(Map<String, dynamic> json) {
+    return FormerCleaningSaveResponse(
+      success: json['success'] ?? false,
+      message: json['message'] ?? '',
+      totalBaskets: json['total_baskets'],
+      totalFormers: json['total_formers'],
+    );
+  }
+}
+
+class FormerCleaningRackData {
+  final int rackNo;
+  final String bin;
+  final List<FormerCleaningItemData> items;
+
+  FormerCleaningRackData({
+    required this.rackNo,
+    required this.bin,
+    required this.items,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'rack_no': rackNo,
+    'bin': bin,
+    'items': items.map((e) => e.toJson()).toList(),
+  };
+}
+
+class FormerCleaningItemData {
+  final String tagId;
+  final String basketNo;
+  final int basketFormerQty;
+
+  FormerCleaningItemData({
+    required this.tagId,
+    required this.basketNo,
+    required this.basketFormerQty,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'tag_id': tagId,
+    'basket_no': basketNo,
+    'basket_former_qty': basketFormerQty,
+  };
+}
+
+extension ApiServiceFormerCleaning on ApiService {
+  /// Save Empty Stock data to backend
+  static Future<FormerCleaningSaveResponse> saveFormerCleaning({
+    required String stockoutForm,
+    required String action,
+    required String source,
+    required List<FormerCleaningRackData> racks,
+  }) async {
+    try {
+      final url = Uri.parse(
+          '${AppStrings.apiBaseUrl}/wh_former/cleaning/save');
+
+      final body = {
+        'stockout_form': stockoutForm,
+        'action': action,
+        'source': source,
+        'racks': racks.map((r) => r.toJson()).toList(),
+      };
+
+      final response = await http
+          .post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      )
+          .timeout(const Duration(seconds: 30));
+
+      print("Former Moving Response: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        return FormerCleaningSaveResponse.fromJson(jsonData);
+      } else {
+        return FormerCleaningSaveResponse(
+          success: false,
+          message: 'Server error: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      return FormerCleaningSaveResponse(
+        success: false,
+        message: 'Network error: $e',
+      );
+    }
+  }
+}

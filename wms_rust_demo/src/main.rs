@@ -90,6 +90,10 @@ async fn main() {
         .route("/wh_former/stockout/save", post(handle_stockout_save))
         .route("/wh_former/empty_stock/save", post(handle_empty_stock_save))
         .route("/wh_former/moving/save", post(handle_former_moving_save))
+        .route(
+            "/wh_former/cleaning/save",
+            post(handle_former_cleaning_save),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -3127,6 +3131,702 @@ async fn handle_former_moving_save(
         Json(EmptyStockSaveResponse {
             success: true,
             message: "Former Moving saved successfully".to_string(),
+            total_baskets: Some(total_baskets),
+            total_formers: Some(total_formers),
+        }),
+    )
+}
+
+// ==================== FORMER CLEANING SAVE ====================
+#[derive(Debug, Deserialize)]
+struct FormerCleaningSaveRequest {
+    stockout_form: String,
+    action: String,
+    source: String,
+    racks: Vec<FormerCleaningRack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormerCleaningRack {
+    #[allow(dead_code)]
+    rack_no: i32,
+    bin: String,
+    items: Vec<FormerCleaningItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormerCleaningItem {
+    #[allow(dead_code)]
+    tag_id: String,
+    basket_no: String,
+    basket_former_qty: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct FormerCleaningSaveResponse {
+    success: bool,
+    message: String,
+    total_baskets: Option<i32>,
+    total_formers: Option<i32>,
+}
+
+// Batch data struct for storing batch information
+#[derive(Debug)]
+struct BatchData {
+    former_size: String,
+    former_used_day: Option<chrono::NaiveDate>,
+}
+
+async fn handle_former_cleaning_save(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<FormerCleaningSaveRequest>,
+) -> impl IntoResponse {
+    tracing::info!(
+        "🧼 Former cleaning request received with action: {}, source: {}, bin: {}",
+        payload.action,
+        payload.source,
+        payload
+            .racks
+            .first()
+            .map(|r| r.bin.as_str())
+            .unwrap_or("N/A")
+    );
+
+    // Validate action and source combinations
+    let valid_combinations = [
+        ("warehouse", "warehouse"),   // action: warehouse, source: warehouse
+        ("vendor", "warehouse"),      // action: vendor, source: warehouse
+        ("vendor", "production"),     // action: vendor, source: production
+        ("production", "production"), // action: production, source: production
+    ];
+
+    let is_valid = valid_combinations
+        .iter()
+        .any(|&(a, s)| a == payload.action && s == payload.source);
+
+    if !is_valid {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FormerCleaningSaveResponse {
+                success: false,
+                message: format!(
+                    "Invalid action/source combination: {}/{}. Valid combinations are: warehouse/warehouse, vendor/warehouse, vendor/production, production/production",
+                    payload.action, payload.source
+                ),
+                total_baskets: None,
+                total_formers: None,
+            }),
+        );
+    }
+
+    let total_baskets: i32 = payload.racks.iter().map(|r| r.items.len() as i32).sum();
+
+    let total_formers: i32 = payload
+        .racks
+        .iter()
+        .flat_map(|r| r.items.iter())
+        .map(|i| i.basket_former_qty)
+        .sum();
+
+    let mut conn = match state.pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("❌ DB connection error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FormerCleaningSaveResponse {
+                    success: false,
+                    message: format!("Database connection error: {}", e),
+                    total_baskets: None,
+                    total_formers: None,
+                }),
+            );
+        }
+    };
+
+    let db = &state.db_prefix;
+
+    // =====================================
+    // COLLECT PHASE (GROUP BY OLD BATCH)
+    // =====================================
+
+    let mut batch_map: HashMap<String, BatchMove> = HashMap::new();
+    let mut batch_baskets: HashMap<String, Vec<String>> = HashMap::new();
+    let mut batch_details: HashMap<String, BatchData> = HashMap::new();
+
+    for rack in &payload.racks {
+        if rack.items.is_empty() {
+            continue;
+        }
+
+        let first_basket = &rack.items[0].basket_no;
+
+        let query_old_batch = format!(
+            r#"
+            SELECT TOP 1 
+                b.batch_no,
+                b.former_size,
+                b.former_used_day
+            FROM [{}].[wh_former_former_bin_data] bin
+            INNER JOIN [{}].[wh_former_former_batch_data] b ON bin.batch_no = b.batch_no
+            WHERE bin.basket_no = @P1
+            "#,
+            db, db
+        );
+
+        let stream = match conn.query(query_old_batch, &[first_basket]).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("❌ Query old batch failed for {}: {}", first_basket, e);
+                continue;
+            }
+        };
+
+        let rows = match stream.into_first_result().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("❌ Failed to get rows: {}", e);
+                continue;
+            }
+        };
+
+        if rows.is_empty() {
+            tracing::warn!("⚠️ No batch found for basket: {}", first_basket);
+            continue;
+        }
+
+        let row = &rows[0];
+        let old_batch: String = match row.get::<&str, _>(0) {
+            Some(v) => v.to_string(),
+            None => {
+                tracing::warn!("⚠️ Batch number is null for basket: {}", first_basket);
+                continue;
+            }
+        };
+
+        // Store batch details if not already stored
+        if !batch_details.contains_key(&old_batch) {
+            let former_size: String = row.get::<&str, _>(1).unwrap_or_else(|| "").to_string();
+            let former_used_day: Option<chrono::NaiveDate> = row.get(2);
+
+            batch_details.insert(
+                old_batch.clone(),
+                BatchData {
+                    former_size,
+                    former_used_day,
+                },
+            );
+        }
+
+        let basket_qty = rack.items.len() as i32;
+        let former_qty: i32 = rack.items.iter().map(|i| i.basket_former_qty).sum();
+
+        let entry = batch_map.entry(old_batch.clone()).or_default();
+        entry.basket_qty += basket_qty;
+        entry.former_qty += former_qty;
+
+        let basket_vec = batch_baskets.entry(old_batch).or_default();
+        for item in &rack.items {
+            basket_vec.push(item.basket_no.clone());
+        }
+    }
+
+    if batch_map.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(FormerCleaningSaveResponse {
+                success: false,
+                message: "No valid batches found for cleaning".to_string(),
+                total_baskets: Some(total_baskets),
+                total_formers: Some(total_formers),
+            }),
+        );
+    }
+
+    // =====================================
+    // APPLY PHASE (PROCESS EACH BATCH ONCE)
+    // =====================================
+
+    // Determine flow type based on action AND source
+    let is_insert_flow = (payload.action == "warehouse" && payload.source == "warehouse")
+        || (payload.action == "vendor" && payload.source == "warehouse");
+
+    let is_update_flow = (payload.action == "production" && payload.source == "production")
+        || (payload.action == "vendor" && payload.source == "production");
+
+    // Map to stockout action for logging
+    let stockout_action = match (payload.action.as_str(), payload.source.as_str()) {
+        ("warehouse", "warehouse") => "to_cleaning",
+        ("vendor", "warehouse") => "to_vendor",
+        ("vendor", "production") => "production_vendor",
+        ("production", "production") => "production",
+        _ => "unknown",
+    };
+
+    for (old_batch, data) in batch_map {
+        let baskets = match batch_baskets.get(&old_batch) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let batch_detail = match batch_details.get(&old_batch) {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let basket_qty = data.basket_qty;
+        let former_qty = data.former_qty;
+
+        let basket_values = baskets
+            .iter()
+            .map(|b| format!("('{}')", b))
+            .collect::<Vec<String>>()
+            .join(",");
+
+        let query_check_full_batch = format!(
+            r#"
+            SELECT
+                CASE 
+                    WHEN COUNT(b.basket_no) = COUNT(req.basket_no)
+                    THEN 1
+                    ELSE 0
+                END AS is_full_batch
+            FROM [{}].[wh_former_former_bin_data] b
+            LEFT JOIN (
+                VALUES {}
+            ) AS req(basket_no)
+            ON b.basket_no = req.basket_no
+            WHERE b.batch_no = @P1
+            "#,
+            db, basket_values
+        );
+
+        let stream = match conn
+            .query(query_check_full_batch, &[&old_batch.as_str()])
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("❌ Failed to check full batch {}: {}", old_batch, e);
+                continue;
+            }
+        };
+
+        let rows = match stream.into_first_result().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("❌ Failed to get full batch result: {}", e);
+                continue;
+            }
+        };
+
+        let is_full_batch: i32 = if rows.is_empty() {
+            0
+        } else {
+            rows[0].get::<i32, _>(0).unwrap_or(0)
+        };
+
+        // =====================================
+        // 1. UPDATE ORIGINAL BATCH DATA (for all actions)
+        // =====================================
+        let query_update_batch = format!(
+            r#"
+            UPDATE [{}].[wh_former_former_batch_data]
+            SET
+                batch_total_basket =
+                    CASE 
+                        WHEN @P4 = 1 THEN batch_total_basket
+                        ELSE batch_total_basket - @P2
+                    END,
+
+                batch_total_former =
+                    CASE
+                        WHEN @P4 = 1 THEN batch_total_former
+                        ELSE batch_total_former - @P3
+                    END,
+
+                batch_total_basket_in_wh = batch_total_basket_in_wh - @P2,
+                batch_total_former_in_wh = batch_total_former_in_wh - @P3,
+
+                update_at = GETDATE()
+
+            WHERE batch_no = @P1
+            "#,
+            db
+        );
+
+        match conn
+            .execute(
+                query_update_batch,
+                &[&old_batch, &basket_qty, &former_qty, &is_full_batch],
+            )
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    "✅ Updated batch {} (full_batch={}): baskets {}, formers {}",
+                    old_batch,
+                    is_full_batch,
+                    basket_qty,
+                    former_qty
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to update batch {}: {}", old_batch, e);
+                continue;
+            }
+        }
+
+        // Determine bin target based on action and source
+        let bin_target = match (payload.action.as_str(), payload.source.as_str()) {
+            ("warehouse", "warehouse") => "CLEAN",
+            ("vendor", "warehouse") => "VC",
+            ("vendor", "production") => "VC",
+            ("production", "production") => "CLEAN",
+            _ => "CLEAN", // fallback
+        };
+
+        // =====================================
+        // 2. HANDLE BASED ON ACTION/SOURCE COMBINATION
+        // =====================================
+        if is_insert_flow {
+            // ---------- INSERT NEW STOCKOUT FORM ----------
+            let stockout_to = if payload.action == "warehouse" {
+                "CLEAN"
+            } else {
+                "VC"
+            };
+
+            let query_insert_stockout_form = format!(
+                r#"
+                INSERT INTO [{}].[wh_former_former_stockout_form]
+                (
+                    stockout_form,
+                    stockout_date,
+                    stockout_action,
+                    stockout_to,
+                    stockout_from,
+                    batch_no,
+                    former_size,
+                    stockout_total_basket,
+                    stockout_total_former,
+                    stockout_return_basket,
+                    stockout_return_former,
+                    machine_workorder,
+                    most_batch_former_qty,
+                    most_batch_used_day,
+                    is_closed,
+                    stockin_date,
+                    is_confirmed,
+                    create_at,
+                    update_at
+                )
+                VALUES
+                (
+                    @P1,
+                    GETDATE(),
+                    @P2,
+                    @P3,
+                    '',
+                    @P4,
+                    @P5,
+                    @P6,
+                    @P7,
+                    0,
+                    0,
+                    NULL,
+                    @P7,
+                    @P8,
+                    0,
+                    NULL,
+                    0,
+                    GETDATE(),
+                    GETDATE()
+                )
+                "#,
+                db
+            );
+
+            match conn
+                .execute(
+                    query_insert_stockout_form,
+                    &[
+                        &payload.stockout_form,
+                        &stockout_action,
+                        &stockout_to,
+                        &old_batch,
+                        &batch_detail.former_size,
+                        &basket_qty,
+                        &former_qty,
+                        &batch_detail.former_used_day,
+                    ],
+                )
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        "✅ Inserted stockout form for batch {} (source: {})",
+                        old_batch,
+                        payload.source
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "❌ Failed to insert stockout form for batch {}: {}",
+                        old_batch,
+                        e
+                    );
+                }
+            }
+        } else if is_update_flow {
+            // ---------- UPDATE EXISTING STOCKOUT FORM ----------
+            let query_update_stockout_form = format!(
+                r#"
+                UPDATE [{}].[wh_former_former_stockout_form]
+                SET
+                    stockout_total_basket = stockout_total_basket - @P2,
+                    stockout_total_former = stockout_total_former - @P3,
+                    update_at = GETDATE()
+                WHERE stockout_form = @P1
+                "#,
+                db
+            );
+
+            match conn
+                .execute(
+                    query_update_stockout_form,
+                    &[&payload.stockout_form, &basket_qty, &former_qty],
+                )
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        "✅ Updated stockout form {} for batch {} (source: {})",
+                        payload.stockout_form,
+                        old_batch,
+                        payload.source
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "❌ Failed to update stockout form {}: {}",
+                        payload.stockout_form,
+                        e
+                    );
+                }
+            }
+        }
+
+        // =====================================
+        // 3. DETERMINE TARGET BATCH
+        // =====================================
+
+        let mut target_batch = old_batch.clone();
+
+        if is_full_batch == 0 {
+            let query_create_sub_batch = format!(
+                r#"
+                DECLARE @new_batch VARCHAR(25)
+
+                SET @new_batch = 
+                    @P1 
+                    + 'SUB' 
+                    + FORMAT(GETDATE(), 'ddMM') 
+                    + RIGHT(CONVERT(varchar(36), NEWID()), 2)
+
+                INSERT INTO [{}].[wh_former_former_batch_data]
+                (
+                    batch_no,
+                    former_used_day,
+                    former_aql,
+                    is_active,
+                    batch_total_basket,
+                    batch_total_former,
+                    batch_total_basket_in_wh,
+                    batch_total_former_in_wh,
+                    batch_last_stockout,
+                    batch_data_date,
+                    create_at,
+                    update_at,
+                    create_by_id,
+                    update_by_id
+                )
+                SELECT
+                    @new_batch,
+                    former_used_day,
+                    former_aql,
+                    is_active,
+                    @P2,
+                    @P3,
+                    @P2,
+                    @P3,
+                    NULL,
+                    GETDATE(),
+                    GETDATE(),
+                    GETDATE(),
+                    28,
+                    28
+                FROM [{}].[wh_former_former_batch_data]
+                WHERE batch_no = @P1
+
+                SELECT @new_batch AS new_batch
+                "#,
+                db, db
+            );
+
+            let stream = match conn
+                .query(
+                    query_create_sub_batch,
+                    &[&old_batch, &basket_qty, &former_qty],
+                )
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("❌ Create sub batch failed for {}: {}", old_batch, e);
+                    continue;
+                }
+            };
+
+            let rows = match stream.into_first_result().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("❌ Failed to get sub batch result: {}", e);
+                    continue;
+                }
+            };
+
+            if rows.is_empty() {
+                tracing::error!("❌ No sub batch created for batch: {}", old_batch);
+                continue;
+            }
+
+            target_batch = match rows[0].get::<&str, _>(0) {
+                Some(val) => val.to_string(),
+                None => {
+                    tracing::error!("❌ Sub batch number is null");
+                    continue;
+                }
+            };
+
+            tracing::info!(
+                "🆕 Created sub batch {} from {} (source: {})",
+                target_batch,
+                old_batch,
+                payload.source
+            );
+        }
+
+        // =====================================
+        // UPDATE BIN FOR ALL BASKETS
+        // =====================================
+
+        let query_update_bin = format!(
+            r#"
+            UPDATE bin
+            SET
+                bin.bin = @P1,
+                bin.batch_no = @P2,
+                bin.update_at = GETDATE()
+            FROM [{}].[wh_former_former_bin_data] bin
+            JOIN (
+                VALUES {}
+            ) AS baskets(basket_no)
+            ON bin.basket_no = baskets.basket_no
+            "#,
+            db, basket_values
+        );
+
+        match conn
+            .execute(query_update_bin, &[&bin_target, &target_batch])
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    "✅ Updated {} baskets → bin {} batch {} (source: {})",
+                    baskets.len(),
+                    bin_target,
+                    target_batch,
+                    payload.source
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to update bins: {}", e);
+            }
+        }
+
+        // =====================================
+        // 4. INSERT BATCH LOG (for all actions)
+        // =====================================
+        let query_batch_log = format!(
+            r#"
+            INSERT INTO [{}].[wh_former_former_batch_data_log]
+            (
+                batch_no,
+                batch_action_name,
+                batch_qty_split,
+                batch_qty_total,
+                batch_qty_in_wh,
+                batch_qty_merge,
+                batch_qty_stockout,
+                batch_basket_qty_in_wh,
+                batch_basket_qty_merge,
+                batch_basket_qty_split,
+                batch_basket_qty_stockout,
+                batch_basket_qty_total,
+                batch_basket_qty_stockin,
+                batch_qty_stockin,
+                batch_change_day,
+                create_at,
+                update_at,
+                is_confirmed,
+            )
+            VALUES
+            (
+                @P1,
+                'CLEANING',
+                0,
+                @P2,
+                @P2,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                GETDATE(),
+                GETDATE(),
+                GETDATE(),
+                0,
+            )
+            "#,
+            db
+        );
+
+        let _ = conn
+            .execute(query_batch_log, &[&target_batch, &former_qty])
+            .await;
+    }
+
+    tracing::info!(
+        "✅ Former cleaning completed: {} baskets / {} formers (action: {}, source: {})",
+        total_baskets,
+        total_formers,
+        payload.action,
+        payload.source
+    );
+
+    (
+        StatusCode::OK,
+        Json(FormerCleaningSaveResponse {
+            success: true,
+            message: format!(
+                "Former cleaning saved successfully for action '{}' with source '{}' ({} baskets / {} formers)",
+                payload.action, payload.source, total_baskets, total_formers
+            ),
             total_baskets: Some(total_baskets),
             total_formers: Some(total_formers),
         }),
