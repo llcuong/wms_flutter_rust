@@ -32,6 +32,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
   bool isConnected = false;
   ScannerStatus scannerStatus = ScannerStatus.disconnected;
   BasketMode _basketMode = BasketMode.full;
+  int quantity = 5;
 
   // Machine & Line Selection
   List<MachineData> _machines = [];
@@ -206,6 +207,12 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
       return;
     }
 
+    if (_basketMode == BasketMode.full) {
+      quantity = 5;
+    } else if (_basketMode == BasketMode.empty) {
+      quantity = 0;
+    }
+
     // Add to batch queue
     _pendingTags[tagId] = tagData;
     _resetBatchTimer();
@@ -240,7 +247,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
 
           _scannedItemsMap[tagId] = ScannedItem(
             id: tagId,
-            quantity: 0,
+            quantity: quantity,
             vendor: basket.basketVendor,
             bin: '',  // User must select bin from modal
             status: ItemStatus.success,
