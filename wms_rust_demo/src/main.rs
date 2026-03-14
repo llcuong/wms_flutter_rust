@@ -3174,7 +3174,7 @@ struct FormerCleaningSaveResponse {
 #[derive(Debug)]
 struct BatchData {
     former_size: String,
-    former_used_day: Option<chrono::NaiveDate>,
+    former_used_day: Option<i32>,
 }
 
 async fn handle_former_cleaning_save(
@@ -3194,10 +3194,10 @@ async fn handle_former_cleaning_save(
 
     // Validate action and source combinations
     let valid_combinations = [
-        ("warehouse", "warehouse"),   // action: warehouse, source: warehouse
-        ("vendor", "warehouse"),      // action: vendor, source: warehouse
-        ("vendor", "production"),     // action: vendor, source: production
-        ("production", "production"), // action: production, source: production
+        ("warehouse", "none"),    // action: warehouse, source: none
+        ("vendor", "warehouse"),  // action: vendor, source: warehouse
+        ("vendor", "production"), // action: vendor, source: production
+        ("production", "none"),   // action: production, source: none
     ];
 
     let is_valid = valid_combinations
@@ -3263,18 +3263,33 @@ async fn handle_former_cleaning_save(
 
         let query_old_batch = format!(
             r#"
-            SELECT TOP 1 
+            SELECT TOP 1
                 b.batch_no,
                 b.former_size,
-                b.former_used_day
-            FROM [{}].[wh_former_former_bin_data] bin
-            INNER JOIN [{}].[wh_former_former_batch_data] b ON bin.batch_no = b.batch_no
+
+                CASE 
+                    WHEN sf.stockout_date IS NOT NULL
+                    THEN b.former_used_day + DATEDIFF(DAY, sf.stockout_date, GETDATE())
+                    ELSE b.former_used_day
+                END AS former_used_day
+
+            FROM {}.[wh_former_former_bin_data] bin
+
+            INNER JOIN {}.[wh_former_former_batch_data] b 
+                ON bin.batch_no = b.batch_no
+
+            LEFT JOIN {}.[wh_former_former_stockout_form] sf
+                ON sf.stockout_form = @P2
+
             WHERE bin.basket_no = @P1
             "#,
-            db, db
+            db, db, db
         );
 
-        let stream = match conn.query(query_old_batch, &[first_basket]).await {
+        let stream = match conn
+            .query(query_old_batch, &[first_basket, &payload.stockout_form])
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("❌ Query old batch failed for {}: {}", first_basket, e);
@@ -3307,7 +3322,7 @@ async fn handle_former_cleaning_save(
         // Store batch details if not already stored
         if !batch_details.contains_key(&old_batch) {
             let former_size: String = row.get::<&str, _>(1).unwrap_or_else(|| "").to_string();
-            let former_used_day: Option<chrono::NaiveDate> = row.get(2);
+            let former_used_day: Option<i32> = row.get(2);
 
             batch_details.insert(
                 old_batch.clone(),
@@ -3348,10 +3363,10 @@ async fn handle_former_cleaning_save(
     // =====================================
 
     // Determine flow type based on action AND source
-    let is_insert_flow = (payload.action == "warehouse" && payload.source == "warehouse")
+    let is_insert_flow = (payload.action == "warehouse")
         || (payload.action == "vendor" && payload.source == "warehouse");
 
-    let is_update_flow = (payload.action == "production" && payload.source == "production")
+    let is_update_flow = (payload.action == "production")
         || (payload.action == "vendor" && payload.source == "production");
 
     // Map to stockout action for logging
@@ -3391,7 +3406,7 @@ async fn handle_former_cleaning_save(
                     THEN 1
                     ELSE 0
                 END AS is_full_batch
-            FROM [{}].[wh_former_former_bin_data] b
+            FROM {}.[wh_former_former_bin_data] b
             LEFT JOIN (
                 VALUES {}
             ) AS req(basket_no)
@@ -3429,31 +3444,56 @@ async fn handle_former_cleaning_save(
         // =====================================
         // 1. UPDATE ORIGINAL BATCH DATA (for all actions)
         // =====================================
-        let query_update_batch = format!(
-            r#"
-            UPDATE [{}].[wh_former_former_batch_data]
-            SET
-                batch_total_basket =
-                    CASE 
-                        WHEN @P4 = 1 THEN batch_total_basket
-                        ELSE batch_total_basket - @P2
-                    END,
+        let query_update_batch = if is_update_flow {
+            format!(
+                r#"
+                UPDATE {}.[wh_former_former_batch_data]
+                SET
+                    batch_total_basket =
+                        CASE 
+                            WHEN @P4 = 1 THEN batch_total_basket
+                            ELSE batch_total_basket - @P2
+                        END,
 
-                batch_total_former =
-                    CASE
-                        WHEN @P4 = 1 THEN batch_total_former
-                        ELSE batch_total_former - @P3
-                    END,
+                    batch_total_former =
+                        CASE
+                            WHEN @P4 = 1 THEN batch_total_former
+                            ELSE batch_total_former - @P3
+                        END,
 
-                batch_total_basket_in_wh = batch_total_basket_in_wh - @P2,
-                batch_total_former_in_wh = batch_total_former_in_wh - @P3,
+                    update_at = GETDATE()
 
-                update_at = GETDATE()
+                WHERE batch_no = @P1
+                "#,
+                db
+            )
+        } else {
+            format!(
+                r#"
+                UPDATE {}.[wh_former_former_batch_data]
+                SET
+                    batch_total_basket =
+                        CASE 
+                            WHEN @P4 = 1 THEN batch_total_basket
+                            ELSE batch_total_basket - @P2
+                        END,
 
-            WHERE batch_no = @P1
-            "#,
-            db
-        );
+                    batch_total_former =
+                        CASE
+                            WHEN @P4 = 1 THEN batch_total_former
+                            ELSE batch_total_former - @P3
+                        END,
+
+                    batch_total_basket_in_wh = batch_total_basket_in_wh - @P2,
+                    batch_total_former_in_wh = batch_total_former_in_wh - @P3,
+
+                    update_at = GETDATE()
+
+                WHERE batch_no = @P1
+                "#,
+                db
+            )
+        };
 
         match conn
             .execute(
@@ -3479,10 +3519,10 @@ async fn handle_former_cleaning_save(
 
         // Determine bin target based on action and source
         let bin_target = match (payload.action.as_str(), payload.source.as_str()) {
-            ("warehouse", "warehouse") => "CLEAN",
+            ("warehouse", "none") => "CLEAN",
             ("vendor", "warehouse") => "VC",
             ("vendor", "production") => "VC",
-            ("production", "production") => "CLEAN",
+            ("production", "none") => "CLEAN",
             _ => "CLEAN", // fallback
         };
 
@@ -3499,7 +3539,7 @@ async fn handle_former_cleaning_save(
 
             let query_insert_stockout_form = format!(
                 r#"
-                INSERT INTO [{}].[wh_former_former_stockout_form]
+                INSERT INTO {}.[wh_former_former_stockout_form]
                 (
                     stockout_form,
                     stockout_date,
@@ -3582,7 +3622,7 @@ async fn handle_former_cleaning_save(
             // ---------- UPDATE EXISTING STOCKOUT FORM ----------
             let query_update_stockout_form = format!(
                 r#"
-                UPDATE [{}].[wh_former_former_stockout_form]
+                UPDATE {}.[wh_former_former_stockout_form]
                 SET
                     stockout_total_basket = stockout_total_basket - @P2,
                     stockout_total_former = stockout_total_former - @P3,
@@ -3634,7 +3674,7 @@ async fn handle_former_cleaning_save(
                     + FORMAT(GETDATE(), 'ddMM') 
                     + RIGHT(CONVERT(varchar(36), NEWID()), 2)
 
-                INSERT INTO [{}].[wh_former_former_batch_data]
+                INSERT INTO {}.[wh_former_former_batch_data]
                 (
                     batch_no,
                     former_used_day,
@@ -3666,7 +3706,7 @@ async fn handle_former_cleaning_save(
                     GETDATE(),
                     28,
                     28
-                FROM [{}].[wh_former_former_batch_data]
+                FROM {}.[wh_former_former_batch_data]
                 WHERE batch_no = @P1
 
                 SELECT @new_batch AS new_batch
@@ -3728,7 +3768,7 @@ async fn handle_former_cleaning_save(
                 bin.bin = @P1,
                 bin.batch_no = @P2,
                 bin.update_at = GETDATE()
-            FROM [{}].[wh_former_former_bin_data] bin
+            FROM {}.[wh_former_former_bin_data] bin
             JOIN (
                 VALUES {}
             ) AS baskets(basket_no)
@@ -3760,7 +3800,7 @@ async fn handle_former_cleaning_save(
         // =====================================
         let query_batch_log = format!(
             r#"
-            INSERT INTO [{}].[wh_former_former_batch_data_log]
+            INSERT INTO {}.[wh_former_former_batch_data_log]
             (
                 batch_no,
                 batch_action_name,
@@ -3779,7 +3819,7 @@ async fn handle_former_cleaning_save(
                 batch_change_day,
                 create_at,
                 update_at,
-                is_confirmed,
+                is_confirmed
             )
             VALUES
             (
@@ -3800,7 +3840,7 @@ async fn handle_former_cleaning_save(
                 GETDATE(),
                 GETDATE(),
                 GETDATE(),
-                0,
+                0
             )
             "#,
             db

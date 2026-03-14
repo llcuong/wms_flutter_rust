@@ -35,6 +35,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   bool isConnected = false;
   ScannerStatus scannerStatus = ScannerStatus.disconnected;
   BasketMode _basketMode = BasketMode.full;
+  int quantity = 5;
 
   // Selected Action
   CleaningActionWithSource? _selectedAction;
@@ -47,16 +48,14 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   final List<String> _lines = ['A1', 'A2', 'B1', 'B2'];
   String _selectedLine = 'A1';
 
-  // From/To Bin Selection
-  String? _fromBin;
-  String? _toBin;
+  // Stockout Forms (for fromProduction)
+  List<StockoutFormData> _stockoutForms = [];
+  StockoutFormData? _selectedStockoutForm;
+  bool _isLoadingForms = false;
+  bool _isLoadingMachines = false;
 
   List<String> _bins = [];
   bool _isLoadingBins = false;
-
-  List<StockoutFormData> _machineForms = [];
-  StockoutFormData? _currentForm;
-  bool _isLoadingForms = false;
 
   final Map<String, ScannedItem> _scannedItemsMap = {};
 
@@ -108,7 +107,9 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       _selectedAction = action;
     });
 
-    if (action != CleaningAction.fromProduction) {
+    if (action.isFromProduction) {
+      await _loadMachines();
+    } else {
       _generateStockForm();
     }
 
@@ -131,9 +132,15 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     setState(() {
       _selectedAction = action;
       _stockFormController.clear();
+      _machines = [];
+      _selectedMachine = null;
+      _stockoutForms = [];
+      _selectedStockoutForm = null;
     });
 
-    if (action != CleaningAction.fromProduction) {
+    if (action.isFromProduction) {
+      await _loadMachines();
+    } else {
       _generateStockForm();
     }
 
@@ -149,7 +156,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     String stockForm;
     String prefix = 'CL';
 
-    if (_selectedAction == CleaningAction.fromWarehouse) {
+    if (_selectedAction?.isFromProduction == true) {
       prefix = 'CL';
     } else {
       prefix = 'VC';
@@ -190,11 +197,66 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   Future<void> _loadMachines() async {
-    final machines = await ApiService.getMachines();
-    if (mounted) {
+    setState(() => _isLoadingMachines = true);
+
+    try {
+      final machines = await ApiService.getMachines();
+
+      if (!mounted) return;
+
       setState(() {
         _machines = machines;
+        _selectedMachine = machines.isNotEmpty ? machines.first : null;
+        _stockoutForms = [];
+        _selectedStockoutForm = null;
+        _selectedLine = 'A1';
+        _isLoadingMachines = false;
       });
+
+      if (_selectedMachine != null) {
+        await _loadStockoutForms();
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => _isLoadingMachines = false);
+      _showError('Load Failed', 'Cannot load machines: ${e.toString()}');
+    }
+  }
+
+  Future<void> _loadStockoutForms() async {
+    if (_selectedMachine == null) return;
+
+    setState(() => _isLoadingForms = true);
+
+    try {
+      final forms = await ApiService.getStockoutForms(
+        _selectedMachine!.areaId,
+        line: _selectedLine,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _stockoutForms = forms;
+        _selectedStockoutForm = forms.isNotEmpty ? forms.first : null;
+        _isLoadingForms = false;
+      });
+
+      if (_selectedStockoutForm != null) {
+        setState(() {
+          _stockFormController.text = _selectedStockoutForm!.stockoutForm;
+        });
+      } else {
+        _generateStockForm();
+      }
+
+      print(_effectiveStockForm);
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => _isLoadingForms = false);
+      _generateStockForm();
     }
   }
 
@@ -259,7 +321,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       );
 
       _errorSubscription = _rfidScanner.onError.listen(
-        (error) => _showError('RFID Error', error),
+            (error) => _showError('RFID Error', error),
       );
 
       AppModal.showSuccess(
@@ -304,6 +366,12 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       return;
     }
 
+    if (_basketMode == BasketMode.full) {
+      quantity = 5;
+    } else if (_basketMode == BasketMode.empty) {
+      quantity = 0;
+    }
+
     _pendingTags[tagId] = tagData;
     _resetBatchTimer();
   }
@@ -341,7 +409,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
           _scannedItemsMap[tagId] = ScannedItem(
             id: tagId,
-            quantity: 0,
+            quantity: quantity,
             vendor: basket.basketVendor,
             bin: '',
             status: ItemStatus.success,
@@ -587,7 +655,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   Future<void> _saveRackCache() async {
-    // if (_selectedMachine == null) return;
     final prefs = await SharedPreferences.getInstance();
 
     final data = {
@@ -637,37 +704,14 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       return;
     }
 
-    // if (_selectedMachine?.areaName == null) {
-    //   _showWarning(
-    //     'Missing Machine',
-    //     'Please select machine before add scanned items to rack',
-    //   );
-    // }
-    //
-    // final areaName = _selectedMachine!.areaName!;
-    //
-    // setState(() {
-    //   for (final item in _scannedItemsMap.values) {
-    //     item.bin = areaName;
-    //   }
-    // });
-
     final confirm = await AppModal.showConfirm(
       context: context,
       title: 'Add to Rack',
       message:
-          'Add ${_scannedItemsMap.length} items to Rack $currentRackNo?'
+      'Add ${_scannedItemsMap.length} items to Rack $currentRackNo?',
     );
 
     if (confirm != true) return;
-
-    // String actionBin = '';
-    //
-    // if (_selectedAction == CleaningAction.fromWarehouse) {
-    //   actionBin = 'CLEAN';
-    // } else if (_selectedAction == CleaningAction.fromProduction) {
-    //   actionBin = '';
-    // }
 
     setState(() {
       _racks.add(
@@ -706,7 +750,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       context: context,
       title: 'Unsaved Items',
       message:
-          'You have ${_allRackTagIds.length} scanned items that are not saved yet.\n\nAre you sure you want to exit?',
+      'You have ${_allRackTagIds.length} scanned items that are not saved yet.\n\nAre you sure you want to exit?',
       confirmText: 'EXIT',
       cancelText: 'CANCEL',
     );
@@ -715,6 +759,21 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       Navigator.pop(context);
     }
   }
+
+  // ─── Helpers ─────────────────────────────────────────────────────────────
+
+  /// Returns the stock form string to use when saving.
+  /// For fromProduction: prefer the selected stockout form, else the text field.
+  /// For everything else: always use the text field value.
+  String get _effectiveStockForm {
+    if (_selectedAction?.isFromProduction == true &&
+        _selectedStockoutForm != null) {
+      return _selectedStockoutForm!.stockoutForm;
+    }
+    return _stockFormController.text;
+  }
+
+  // ─── Build ───────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -730,8 +789,16 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildFormSelector(),
-                  const SizedBox(height: 24),
+                  // ── fromProduction: machine/line pickers + form card ──
+                  if (_selectedAction?.isFromProduction == true) ...[
+                    _buildProductionFormSection(),
+                    const SizedBox(height: 16),
+                    _buildStockoutFormInfoCard(),
+                    const SizedBox(height: 24),
+                  ] else ...[
+                    _buildFormSelector(),
+                    const SizedBox(height: 24),
+                  ],
                   _buildBasketModeSelector(),
                   const SizedBox(height: 24),
                   _buildStatsCards(),
@@ -747,6 +814,8 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
+  // ─── AppBar ──────────────────────────────────────────────────────────────
+
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: Colors.white.withOpacity(0.9),
@@ -757,7 +826,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       ),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min, // Add this to prevent column from taking more space than needed
+        mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
             'Former Cleaning',
@@ -769,9 +838,9 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
           ),
           if (_selectedAction != null)
             Container(
-              constraints: const BoxConstraints(maxWidth: 200), // Add max width constraint
+              constraints: const BoxConstraints(maxWidth: 200),
               child: Row(
-                mainAxisSize: MainAxisSize.min, // Add this to prevent row from expanding
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
                     _selectedAction!.icon,
@@ -779,7 +848,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                     color: _selectedAction!.color,
                   ),
                   const SizedBox(width: 4),
-                  Flexible( // Wrap Text with Flexible to allow it to wrap/ellipsize
+                  Flexible(
                     child: Text(
                       _selectedAction!.displayName,
                       style: TextStyle(
@@ -787,7 +856,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
-                      overflow: TextOverflow.ellipsis, // Add ellipsis if text overflows
+                      overflow: TextOverflow.ellipsis,
                       maxLines: 1,
                     ),
                   ),
@@ -812,7 +881,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                     vertical: 8,
                   ),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min, // Add this
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         _selectedAction!.icon,
@@ -820,7 +889,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                         color: _selectedAction!.color,
                       ),
                       const SizedBox(width: 6),
-                      Flexible( // Wrap with Flexible
+                      Flexible(
                         child: Text(
                           _selectedAction!.displayName,
                           style: TextStyle(
@@ -847,13 +916,269 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
+  // ─── Production section (machine + line + stockout form dropdown) ─────────
+
+  Widget _buildProductionFormSection() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.slate200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 15,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Machine + Line row
+          Row(
+            children: [
+              // Machine dropdown
+              Expanded(
+                child: _isLoadingMachines
+                    ? _buildLoadingDropdown('MACHINE')
+                    : _buildLabeledDropdown<MachineData>(
+                  label: 'MACHINE',
+                  value: _selectedMachine,
+                  items: _machines,
+                  itemLabel: (m) => m.areaName ?? m.areaId,
+                  onChanged: (value) async {
+                    setState(() {
+                      _selectedMachine = value;
+                      _stockoutForms = [];
+                      _selectedStockoutForm = null;
+                    });
+                    if (value != null) {
+                      await _loadStockoutForms();
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Line dropdown
+              Expanded(
+                child: _buildLabeledDropdown<String>(
+                  label: 'LINE',
+                  value: _selectedLine,
+                  items: _lines,
+                  itemLabel: (l) => l,
+                  onChanged: (value) async {
+                    setState(() {
+                      _selectedLine = value!;
+                      _stockoutForms = [];
+                      _selectedStockoutForm = null;
+                    });
+                    await _loadStockoutForms();
+                  },
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 16),
+
+          // Stockout form selection or generated form
+          if (_isLoadingForms)
+            _buildLoadingDropdown('STOCK FORM')
+          else if (_stockoutForms.isNotEmpty)
+            _buildLabeledDropdown<StockoutFormData>(
+              label: 'STOCK FORM',
+              value: _selectedStockoutForm,
+              items: _stockoutForms,
+              itemLabel: (f) => f.stockoutForm,
+              onChanged: (value) {
+                setState(() {
+                  _selectedStockoutForm = value;
+                  if (value != null) {
+                    _stockFormController.text = value.stockoutForm;
+                  }
+                });
+              },
+            )
+          else ...[
+              _buildTextFieldWithLabel(
+                label: 'STOCK FORM',
+                controller: _stockFormController,
+                hintText: 'Auto-generated form...',
+              ),
+              const SizedBox(height: 12),
+              _buildRegenerateButton(),
+            ],
+        ],
+      ),
+    );
+  }
+
+  /// Info card for the selected stockout form (fromProduction only).
+  Widget _buildStockoutFormInfoCard() {
+    if (_isLoadingForms) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_selectedMachine == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.slate50,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.slate200),
+        ),
+        child: const Center(
+          child: Text(
+            'Select a machine to view Stockout Forms',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        ),
+      );
+    }
+
+    if (_selectedStockoutForm == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF1F2),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFFFE4E6)),
+        ),
+        child: Center(
+          child: Text(
+            'No Stockout Form found for Line $_selectedLine',
+            style: const TextStyle(
+              color: Color(0xFFE11D48),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final form = _selectedStockoutForm!;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'FORM: ${form.stockoutForm}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    form.stockoutDate ?? 'Unknown Date',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  form.formerSize ?? 'N/A',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: _buildInfoItem(
+                  'Total Basket',
+                  '${form.stockoutTotalBasket}',
+                ),
+              ),
+              Expanded(
+                child: _buildInfoItem(
+                  'Total Former',
+                  '${form.stockoutTotalFormer}',
+                ),
+              ),
+              Expanded(
+                child: _buildInfoItem(
+                  'Returned Basket',
+                  '${form.stockoutReturnBasket}',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildInfoItem(
+                  'Returned Former',
+                  '${form.stockoutReturnFormer}',
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: _buildInfoItem(
+                  'Batch Used Day',
+                  '${form.mostBatchUsedDay}',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Non-production stock form section ───────────────────────────────────
+
   Widget _buildFormSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Stock Form section — only shown when action != fromProduction
         if (_selectedAction != CleaningAction.fromProduction) ...[
-          // Label
           const Padding(
             padding: EdgeInsets.only(left: 4, bottom: 8),
             child: Text(
@@ -866,53 +1191,17 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
               ),
             ),
           ),
-
-          // Form Row with TextField and Icon Button
           Row(
             children: [
-              // Stock Form TextField (takes remaining space)
               Expanded(
-                child: TextField(
+                child: _buildTextFieldWithLabel(
+                  label: '',
                   controller: _stockFormController,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Auto-generated form...',
-                    hintStyle: TextStyle(
-                      color: AppColors.textSecondary.withOpacity(0.5),
-                      fontWeight: FontWeight.w400,
-                    ),
-                    filled: true,
-                    fillColor: AppColors.slate50,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: AppColors.slate200),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: AppColors.slate200),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(
-                        color: AppColors.primary,
-                        width: 1.5,
-                      ),
-                    ),
-                  ),
+                  hintText: 'Auto-generated form...',
+                  showLabel: false,
                 ),
               ),
-
               const SizedBox(width: 12),
-
-              // Regenerate Icon Button (fixed width)
               SizedBox(
                 width: 48,
                 height: 48,
@@ -943,6 +1232,205 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
+  // ─── Shared sub-widgets ──────────────────────────────────────────────────
+
+  /// Generic labeled DropdownButtonFormField.
+  Widget _buildLabeledDropdown<T>({
+    required String label,
+    required T? value,
+    required List<T> items,
+    required String Function(T) itemLabel,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(
+            '$label*',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textSecondary,
+              letterSpacing: 1.0,
+            ),
+          ),
+        ),
+        DropdownButtonFormField<T>(
+          value: value,
+          isExpanded: true,
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: AppColors.slate50,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 12,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppColors.slate200),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppColors.slate200),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                color: AppColors.primary,
+                width: 1.5,
+              ),
+            ),
+          ),
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary,
+          ),
+          items: items
+              .map(
+                (item) => DropdownMenuItem<T>(
+              value: item,
+              child: Text(
+                itemLabel(item),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          )
+              .toList(),
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoadingDropdown(String label) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(
+            '$label*',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textSecondary,
+              letterSpacing: 1.0,
+            ),
+          ),
+        ),
+        Container(
+          height: 48,
+          decoration: BoxDecoration(
+            color: AppColors.slate50,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.slate200),
+          ),
+          child: const Center(
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTextFieldWithLabel({
+    required String label,
+    required TextEditingController controller,
+    required String hintText,
+    bool showLabel = true,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (showLabel && label.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 6),
+            child: Text(
+              '$label*',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textSecondary,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ),
+        TextField(
+          controller: controller,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary,
+          ),
+          decoration: InputDecoration(
+            hintText: hintText,
+            hintStyle: TextStyle(
+              color: AppColors.textSecondary.withOpacity(0.5),
+              fontWeight: FontWeight.w400,
+            ),
+            filled: true,
+            fillColor: AppColors.slate50,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 14,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppColors.slate200),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppColors.slate200),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                color: AppColors.primary,
+                width: 1.5,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRegenerateButton() {
+    return Container(
+      width: double.infinity,
+      height: 48,
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: AppColors.primary.withOpacity(0.3),
+          width: 2,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        color: AppColors.primary.withOpacity(0.05),
+      ),
+      child: TextButton.icon(
+        onPressed: _generateStockForm,
+        icon: const Icon(Icons.refresh, color: AppColors.primary),
+        label: const Text(
+          'Regenerate Form',
+          style: TextStyle(
+            color: AppColors.primary,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildInfoItem(String label, String value) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -967,6 +1455,8 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
+  // ─── Basket mode selector ────────────────────────────────────────────────
+
   Widget _buildBasketModeSelector() {
     Widget buildButton(BasketMode mode, String label) {
       final bool selected = _basketMode == mode;
@@ -987,12 +1477,12 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
               borderRadius: BorderRadius.circular(16),
               boxShadow: selected
                   ? [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2),
-                      ),
-                    ]
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.06),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ]
                   : null,
             ),
             child: Center(
@@ -1026,11 +1516,13 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
+  // ─── Stats cards ─────────────────────────────────────────────────────────
+
   Widget _buildStatsCards() {
     final totalBaskets = _scannedItemsMap.length;
     final totalFormers = scannedItems.fold<int>(
       0,
-      (sum, item) => sum + item.quantity,
+          (sum, item) => sum + item.quantity,
     );
 
     return Row(
@@ -1069,46 +1561,46 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   Widget _buildStatCard(
-    String label,
-    String value,
-    Color color,
-    bool isRack,
-    bool isClickableForItems,
-  ) {
+      String label,
+      String value,
+      Color color,
+      bool isRack,
+      bool isClickableForItems,
+      ) {
     return GestureDetector(
       onTap: isRack
           ? () {
-              RackDetailModal.show(
-                context: context,
-                racks: _racks,
-                isBinSelection: false,
-                onDelete: (rackNo) async {
-                  setState(() {
-                    final rackIndex = _racks.indexWhere(
-                      (r) => r.rackNo == rackNo,
-                    );
-                    if (rackIndex != -1) {
-                      for (final item in _racks[rackIndex].items) {
-                        _allRackTagIds.remove(item.id);
-                      }
-                      _racks.removeAt(rackIndex);
-                    }
-                  });
-                  await _saveRackCache();
-                },
-                onUpdateBin: (rackNo, newBinId) async {
-                  setState(() {
-                    final rackIndex = _racks.indexWhere(
-                      (r) => r.rackNo == rackNo,
-                    );
-                    if (rackIndex != -1) {
-                      _racks[rackIndex].bin = newBinId;
-                    }
-                  });
-                  await _saveRackCache();
-                },
+        RackDetailModal.show(
+          context: context,
+          racks: _racks,
+          isBinSelection: false,
+          onDelete: (rackNo) async {
+            setState(() {
+              final rackIndex = _racks.indexWhere(
+                    (r) => r.rackNo == rackNo,
               );
-            }
+              if (rackIndex != -1) {
+                for (final item in _racks[rackIndex].items) {
+                  _allRackTagIds.remove(item.id);
+                }
+                _racks.removeAt(rackIndex);
+              }
+            });
+            await _saveRackCache();
+          },
+          onUpdateBin: (rackNo, newBinId) async {
+            setState(() {
+              final rackIndex = _racks.indexWhere(
+                    (r) => r.rackNo == rackNo,
+              );
+              if (rackIndex != -1) {
+                _racks[rackIndex].bin = newBinId;
+              }
+            });
+            await _saveRackCache();
+          },
+        );
+      }
           : isClickableForItems
           ? _showScannedItemsModal
           : null,
@@ -1168,6 +1660,8 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       ),
     );
   }
+
+  // ─── RFID Power card ─────────────────────────────────────────────────────
 
   Widget _buildRFIDPowerCard() {
     return Container(
@@ -1452,11 +1946,11 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   Widget _buildScanButton(
-    IconData icon,
-    String label,
-    Color color,
-    VoidCallback onTap,
-  ) {
+      IconData icon,
+      String label,
+      Color color,
+      VoidCallback onTap,
+      ) {
     return Expanded(
       child: Material(
         color: Colors.transparent,
@@ -1515,6 +2009,8 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     }
   }
 
+  // ─── Bottom bar ──────────────────────────────────────────────────────────
+
   Widget _buildBottomBar() {
     return Positioned(
       left: 0,
@@ -1554,81 +2050,75 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                 onPressed: _racks.isEmpty
                     ? null
                     : () async {
-                        if (_selectedMachine == null) {
-                          AppModal.showWarning(
-                            context: context,
-                            title: 'Missing Info',
-                            message: 'Please select a Machine first',
-                          );
-                          return;
-                        }
+                  AppModal.showLoading(context: context);
 
-                        AppModal.showLoading(context: context);
+                  final totalItems = _racks.fold<int>(
+                    0,
+                        (sum, r) => sum + r.items.length,
+                  );
+                  final confirm = await AppModal.showConfirm(
+                    context: context,
+                    title: 'Save Stock Out',
+                    message:
+                    'Save ${_racks.length} rack(s) with $totalItems items to database?',
+                  );
 
-                        final totalItems = _racks.fold<int>(
-                          0,
-                          (sum, r) => sum + r.items.length,
+                  if (confirm != true) return;
+
+                  final apiRacks = _racks
+                      .map(
+                        (rack) => FormerCleaningRackData(
+                      rackNo: rack.rackNo,
+                      bin: rack.bin,
+                      items: rack.items.map((item) {
+                        final bNo = item.basketData?.basketNo;
+                        return FormerCleaningItemData(
+                          tagId: item.id,
+                          basketNo: (bNo != null && bNo.isNotEmpty)
+                              ? bNo
+                              : item.id,
+                          basketFormerQty: item.quantity,
                         );
-                        final confirm = await AppModal.showConfirm(
-                          context: context,
-                          title: 'Save Stock Out',
-                          message:
-                              'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nMachine: ${_selectedMachine!.areaId}',
-                        );
+                      }).toList(),
+                    ),
+                  )
+                      .toList();
 
-                        if (confirm != true) return;
+                  final response =
+                  await ApiServiceFormerCleaning.saveFormerCleaning(
+                    // Use selected stockout form when fromProduction,
+                    // otherwise fall back to the text field / generated value.
+                    stockoutForm: _effectiveStockForm,
+                    action: _selectedAction!.code,
+                    source: _selectedAction!.source.name,
+                    racks: apiRacks,
+                  );
 
-                        final apiRacks = _racks
-                            .map(
-                              (rack) => FormerCleaningRackData(
-                            rackNo: rack.rackNo,
-                            bin: rack.bin,
-                            items: rack.items.map((item) {
-                              final bNo = item.basketData?.basketNo;
-                              return FormerCleaningItemData(
-                                tagId: item.id,
-                                basketNo: (bNo != null && bNo.isNotEmpty)
-                                    ? bNo
-                                    : item.id,
-                                basketFormerQty: item.quantity,
-                              );
-                            }).toList(),
-                          ),
-                        )
-                            .toList();
+                  if (mounted) AppModal.hideLoading(context);
 
-                        final response = await ApiServiceFormerCleaning.saveFormerCleaning(
-                          stockoutForm: _stockFormController.text,
-                          action: _selectedAction!.code,
-                          source: _selectedAction!.source.name,
-                          racks: apiRacks,
-                        );
+                  if (response.success) {
+                    _saveRackCache();
 
-                        if (mounted) AppModal.hideLoading(context);
+                    setState(() {
+                      _racks.clear();
+                      _allRackTagIds.clear();
+                      _scannedItemsMap.clear();
+                    });
 
-                        if (response.success) {
-                          _saveRackCache();
-
-                          setState(() {
-                            _racks.clear();
-                            _allRackTagIds.clear();
-                            _scannedItemsMap.clear();
-                          });
-
-                          AppModal.showSuccess(
-                            context: context,
-                            title: 'Success',
-                            message:
-                                'Stock In saved successfully!\n\nLocation: ${_selectedMachine?.areaName}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
-                          );
-                        } else {
-                          AppModal.showError(
-                            context: context,
-                            title: 'Save Failed',
-                            message: response.message,
-                          );
-                        }
-                      },
+                    AppModal.showSuccess(
+                      context: context,
+                      title: 'Success',
+                      message:
+                      'Stock In saved successfully!\n\nLocation: ${_selectedMachine?.areaName}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+                    );
+                  } else {
+                    AppModal.showError(
+                      context: context,
+                      title: 'Save Failed',
+                      message: response.message,
+                    );
+                  }
+                },
                 icon: const Icon(Icons.save, size: 20),
                 label: const Text(
                   'SAVE ALL',
