@@ -98,7 +98,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       return;
     }
 
-    if (action == CleaningAction.exit) {
+    if (action.action == CleaningAction.exit) {
       if (mounted) Navigator.pop(context);
       return;
     }
@@ -124,7 +124,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
     if (action == null) return;
 
-    if (action == CleaningAction.exit) {
+    if (action.action == CleaningAction.exit) {
       _handleExit();
       return;
     }
@@ -2063,7 +2063,10 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                     'Save ${_racks.length} rack(s) with $totalItems items to database?',
                   );
 
-                  if (confirm != true) return;
+                  if (confirm != true) {
+                    if (mounted) AppModal.hideLoading(context);
+                    return;
+                  };
 
                   final apiRacks = _racks
                       .map(
@@ -2105,11 +2108,26 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                       _scannedItemsMap.clear();
                     });
 
+                    final action = _selectedAction!;
+
+                    final String fromLocation = action.isFromProduction
+                        ? (_selectedMachine?.areaName ?? 'Production')
+                        : 'Warehouse';
+
+                    final String toLocation = action.action == CleaningAction.toVendor
+                        ? 'Vendor'
+                        : 'Cleaning Area';
+
+                    if (!mounted) return;
+
                     AppModal.showSuccess(
                       context: context,
-                      title: 'Success',
+                      title: 'Saved Successfully',
                       message:
-                      'Stock In saved successfully!\n\nLocation: ${_selectedMachine?.areaName}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+                      'Former Cleaning saved!\n\n'
+                          'From: $fromLocation → To: $toLocation\n'
+                          'Action: ${action.displayName}\n'
+                          'Baskets: ${response.totalBaskets} | Formers: ${response.totalFormers}',
                     );
                   } else {
                     AppModal.showError(

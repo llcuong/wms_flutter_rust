@@ -3,7 +3,6 @@ import '../../config/constants/app_colors.dart';
 
 enum StockOutAction {
   production,
-  washing,
   toLK,
   exit,
 }
@@ -80,15 +79,7 @@ class StockOutActionModal extends StatelessWidget {
                     action: StockOutAction.production,
                     icon: Icons.precision_manufacturing,
                     label: 'Production',
-                    color: const Color(0xFF9333EA), // Purple
-                  ),
-                  const SizedBox(height: 12),
-                  _buildActionButton(
-                    context,
-                    action: StockOutAction.washing,
-                    icon: Icons.local_laundry_service,
-                    label: 'Washing',
-                    color: const Color(0xFFEF4444), // Red
+                    color: StockOutAction.production.color, // Purple
                   ),
                   const SizedBox(height: 12),
                   _buildActionButton(
@@ -96,7 +87,7 @@ class StockOutActionModal extends StatelessWidget {
                     action: StockOutAction.toLK,
                     icon: Icons.local_shipping,
                     label: 'To LK',
-                    color: const Color(0xFF9333EA), // Purple
+                    color: StockOutAction.toLK.color, // Purple
                   ),
                   const SizedBox(height: 12),
                   _buildActionButton(
@@ -104,7 +95,7 @@ class StockOutActionModal extends StatelessWidget {
                     action: StockOutAction.exit,
                     icon: Icons.exit_to_app,
                     label: 'Exit',
-                    color: const Color(0xFF64748B), // Slate
+                    color: StockOutAction.exit.color, // Slate
                   ),
                 ],
               ),
@@ -156,8 +147,6 @@ extension StockOutActionExtension on StockOutAction {
     switch (this) {
       case StockOutAction.production:
         return 'Production';
-      case StockOutAction.washing:
-        return 'Washing';
       case StockOutAction.toLK:
         return 'To LK';
       case StockOutAction.exit:
@@ -169,8 +158,6 @@ extension StockOutActionExtension on StockOutAction {
     switch (this) {
       case StockOutAction.production:
         return Icons.precision_manufacturing;
-      case StockOutAction.washing:
-        return Icons.local_laundry_service;
       case StockOutAction.toLK:
         return Icons.local_shipping;
       case StockOutAction.exit:
@@ -181,11 +168,9 @@ extension StockOutActionExtension on StockOutAction {
   Color get color {
     switch (this) {
       case StockOutAction.production:
-        return const Color(0xFF9333EA);
-      case StockOutAction.washing:
-        return const Color(0xFFEF4444);
+        return const Color(0xFF2563EB);
       case StockOutAction.toLK:
-        return const Color(0xFF9333EA);
+        return const Color(0xFF16A34A);
       case StockOutAction.exit:
         return const Color(0xFF64748B);
     }

@@ -31,7 +31,6 @@ class FormerStockOutScreen extends StatefulWidget {
 
 class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     with TickerProviderStateMixin {
-
   TabController? _tabController;
 
   // Selected Action
@@ -74,6 +73,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   bool _isFetchingBatch = false;
 
   final List<Rack> _racks = [];
+
   int get currentRackNo => _racks.length + 1;
   final Set<String> _allRackTagIds = {};
 
@@ -177,6 +177,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       _generateStockForm();
     }
 
+    print(_selectedAction?.name);
+
     await _restoreRackCache();
   }
 
@@ -271,7 +273,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     if (_selectedAction == null) return;
 
     // For production mode, try to use the selected stockout form
-    if (_selectedAction == StockOutAction.production && _selectedStockoutForm != null) {
+    if (_selectedAction == StockOutAction.production &&
+        _selectedStockoutForm != null) {
       setState(() {
         _stockFormController.text = _selectedStockoutForm!.stockoutForm;
       });
@@ -304,7 +307,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     if (_selectedAction == StockOutAction.production) {
       stockForm = 'GN$yy$mm$dd$machineNumber${_selectedLine ?? ''}';
     } else {
-      final prefix = _selectedAction == StockOutAction.washing ? 'CL' : 'LK';
+      final prefix = 'LK';
 
       final random = Random();
       final randomDigits = random.nextInt(100).toString().padLeft(2, '0');
@@ -347,8 +350,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       await _rfidScanner.setPower(_convertPowerToLevel(rfidPower));
 
       _tagSubscription = _rfidScanner.onTagScanned.listen(_handleTagScanned);
-      _statusSubscription = _rfidScanner.onConnectionStatusChange.listen(_handleStatusChange);
-      _errorSubscription = _rfidScanner.onError.listen((error) => _showError('RFID Error', error));
+      _statusSubscription = _rfidScanner.onConnectionStatusChange.listen(
+        _handleStatusChange,
+      );
+      _errorSubscription = _rfidScanner.onError.listen(
+        (error) => _showError('RFID Error', error),
+      );
 
       if (mounted) {
         AppModal.showSuccess(
@@ -412,8 +419,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     final baskets = _scannedItemsMap.values
         .where((item) => item.status == ItemStatus.success)
         .length;
-    final formers = _scannedItemsMap.values
-        .fold<int>(0, (sum, item) => sum + item.quantity);
+    final formers = _scannedItemsMap.values.fold<int>(
+      0,
+      (sum, item) => sum + item.quantity,
+    );
 
     if (_totalBaskets != baskets || _totalFormers != formers) {
       setState(() {
@@ -443,9 +452,16 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
         _isFetchingBatch = false;
         return;
       }
-
+      List<BasketData> batchData = [];
       // Fetch batch data from API
-      final batchData = await ApiService.getBasketsStockOutBatch(batchTags, binLocation: _selectedBin);
+      if (_selectedAction == StockOutAction.production) {
+        batchData = await ApiService.getBasketsStockOutBatch(
+          batchTags,
+          binLocation: _selectedBin,
+        );
+      } else {
+        batchData = await ApiService.getBasketsStockOutBatch(batchTags);
+      }
 
       // Create a map for quick lookup
       final dataMap = {for (var item in batchData) item.tagId: item};
@@ -631,10 +647,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
           Expanded(
             child: TabBarView(
               controller: _tabController!,
-              children: [
-                _buildMasterInfoTab(),
-                _buildScanTagTab(),
-              ],
+              children: [_buildMasterInfoTab(), _buildScanTagTab()],
             ),
           ),
         ],
@@ -695,7 +708,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 onTap: _changeAction,
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   child: Row(
                     children: [
                       Icon(
@@ -841,25 +857,25 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                       child: _isLoadingMachines
                           ? _buildLoadingDropdown('MACHINE')
                           : FormDropdownField<MachineData>(
-                        label: 'MACHINE',
-                        required: true,
-                        value: _machines.firstWhere(
-                              (m) => m.areaId == _selectedMachine,
-                          orElse: () => _machines.first,
-                        ),
-                        items: _machines,
-                        itemLabel: (item) => item.areaName ?? item.areaId,
-                        onChanged: (value) async {
-                          setState(() {
-                            _selectedMachine = value?.areaId;
-                            _stockoutForms.clear();
-                            _selectedStockoutForm = null;
-                          });
-                          if (value != null) {
-                            await _loadStockoutForms();
-                          }
-                        },
-                      ),
+                              label: 'MACHINE',
+                              required: true,
+                              value: _machines.firstWhere(
+                                (m) => m.areaId == _selectedMachine,
+                                orElse: () => _machines.first,
+                              ),
+                              items: _machines,
+                              itemLabel: (item) => item.areaName ?? item.areaId,
+                              onChanged: (value) async {
+                                setState(() {
+                                  _selectedMachine = value?.areaId;
+                                  _stockoutForms.clear();
+                                  _selectedStockoutForm = null;
+                                });
+                                if (value != null) {
+                                  await _loadStockoutForms();
+                                }
+                              },
+                            ),
                     ),
                   ],
                 ),
@@ -892,9 +908,19 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                         label: 'SIZE',
                         required: true,
                         value: _selectedSize,
-                        items: const ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'],
+                        items: const [
+                          'XXS',
+                          'XS',
+                          'S',
+                          'M',
+                          'L',
+                          'XL',
+                          'XXL',
+                          'XXXL',
+                        ],
                         itemLabel: (item) => item,
-                        onChanged: (value) => setState(() => _selectedSize = value!),
+                        onChanged: (value) =>
+                            setState(() => _selectedSize = value!),
                       ),
                     ),
                   ],
@@ -935,13 +961,14 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 _isLoadingBins
                     ? _buildLoadingDropdown('BIN')
                     : FormDropdownField<String>(
-                  label: 'BIN',
-                  required: true,
-                  value: _selectedBin,
-                  items: _bins,
-                  itemLabel: (item) => item,
-                  onChanged: (value) => setState(() => _selectedBin = value!),
-                ),
+                        label: 'BIN',
+                        required: true,
+                        value: _selectedBin,
+                        items: _bins,
+                        itemLabel: (item) => item,
+                        onChanged: (value) =>
+                            setState(() => _selectedBin = value!),
+                      ),
 
                 const SizedBox(height: 16),
 
@@ -1027,7 +1054,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
         child: Center(
           child: Text(
             'No Stockout Form found for Line $_selectedLine',
-            style: const TextStyle(color: Color(0xFFE11D48), fontWeight: FontWeight.bold),
+            style: const TextStyle(
+              color: Color(0xFFE11D48),
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
       );
@@ -1078,7 +1108,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 ],
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.primary,
                   borderRadius: BorderRadius.circular(8),
@@ -1098,29 +1131,43 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
           Row(
             children: [
               Expanded(
-                child: _buildInfoItem('Total Basket', '${form.stockoutTotalBasket}'),
+                child: _buildInfoItem(
+                  'Total Basket',
+                  '${form.stockoutTotalBasket}',
+                ),
               ),
               Expanded(
-                child: _buildInfoItem('Total Former', '${form.stockoutTotalFormer}'),
+                child: _buildInfoItem(
+                  'Total Former',
+                  '${form.stockoutTotalFormer}',
+                ),
               ),
               Expanded(
-                child: _buildInfoItem('Returned Basket', '${form.stockoutReturnBasket}'),
+                child: _buildInfoItem(
+                  'Returned Basket',
+                  '${form.stockoutReturnBasket}',
+                ),
               ),
-
             ],
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: _buildInfoItem('Returned Former', '${form.stockoutReturnFormer}'),
+                child: _buildInfoItem(
+                  'Returned Former',
+                  '${form.stockoutReturnFormer}',
+                ),
               ),
               Expanded(
                 flex: 2,
-                child: _buildInfoItem('Batch Used Day', '${form.mostBatchUsedDay}'),
+                child: _buildInfoItem(
+                  'Batch Used Day',
+                  '${form.mostBatchUsedDay}',
+                ),
               ),
             ],
-          )
+          ),
         ],
       ),
     );
@@ -1291,12 +1338,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
               borderRadius: BorderRadius.circular(16),
               boxShadow: selected
                   ? [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                )
-              ]
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.06),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
                   : null,
             ),
             child: Center(
@@ -1334,11 +1381,21 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     return Row(
       children: [
         Expanded(
-          child: _buildStatCard('BASKETS', _totalBaskets.toString(), AppColors.textPrimary, true),
+          child: _buildStatCard(
+            'BASKETS',
+            _totalBaskets.toString(),
+            AppColors.textPrimary,
+            true,
+          ),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: _buildStatCard('FORMERS', _totalFormers.toString(), AppColors.primary, true),
+          child: _buildStatCard(
+            'FORMERS',
+            _totalFormers.toString(),
+            AppColors.primary,
+            true,
+          ),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -1354,46 +1411,50 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   }
 
   Widget _buildStatCard(
-      String label,
-      String value,
-      Color color,
-      bool isClickableForItems,
-      ) {
+    String label,
+    String value,
+    Color color,
+    bool isClickableForItems,
+  ) {
     final isRack = label == 'RACK';
 
     return GestureDetector(
       onTap: isRack
           ? () {
-        RackDetailModal.show(
-          context: context,
-          racks: _racks,
-          isBinSelection: false,
-          onDelete: (rackNo) async {
-            setState(() {
-              final rackIndex = _racks.indexWhere((r) => r.rackNo == rackNo);
-              if (rackIndex != -1) {
-                // Remove tag IDs of deleted rack from _allRackTagIds
-                for (final item in _racks[rackIndex].items) {
-                  _allRackTagIds.remove(item.id);
-                }
-                _racks.removeAt(rackIndex);
-              }
-            });
+              RackDetailModal.show(
+                context: context,
+                racks: _racks,
+                isBinSelection: false,
+                onDelete: (rackNo) async {
+                  setState(() {
+                    final rackIndex = _racks.indexWhere(
+                      (r) => r.rackNo == rackNo,
+                    );
+                    if (rackIndex != -1) {
+                      // Remove tag IDs of deleted rack from _allRackTagIds
+                      for (final item in _racks[rackIndex].items) {
+                        _allRackTagIds.remove(item.id);
+                      }
+                      _racks.removeAt(rackIndex);
+                    }
+                  });
 
-            await _saveRackCache();
-          },
-          onUpdateBin: (rackNo, newBinId) async {
-            setState(() {
-              final rackIndex = _racks.indexWhere((r) => r.rackNo == rackNo);
-              if (rackIndex != -1) {
-                _racks[rackIndex].bin = newBinId;
-              }
-            });
+                  await _saveRackCache();
+                },
+                onUpdateBin: (rackNo, newBinId) async {
+                  setState(() {
+                    final rackIndex = _racks.indexWhere(
+                      (r) => r.rackNo == rackNo,
+                    );
+                    if (rackIndex != -1) {
+                      _racks[rackIndex].bin = newBinId;
+                    }
+                  });
 
-            await _saveRackCache();
-          },
-        );
-      }
+                  await _saveRackCache();
+                },
+              );
+            }
           : isClickableForItems
           ? _showScannedItemsModal
           : null,
@@ -1523,7 +1584,11 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                         color: AppColors.primary.withOpacity(0.1),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.sensors, color: AppColors.primary, size: 28),
+                      child: const Icon(
+                        Icons.sensors,
+                        color: AppColors.primary,
+                        size: 28,
+                      ),
                     ),
                   ],
                 ),
@@ -1600,9 +1665,14 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 Row(
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.remove, color: AppColors.textTertiary),
+                      icon: const Icon(
+                        Icons.remove,
+                        color: AppColors.textTertiary,
+                      ),
                       onPressed: () {
-                        setState(() => rfidPower = (rfidPower - 1).clamp(0, 50));
+                        setState(
+                          () => rfidPower = (rfidPower - 1).clamp(0, 50),
+                        );
                       },
                     ),
                     Expanded(
@@ -1616,21 +1686,29 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             enabledThumbRadius: 14,
                             elevation: 4,
                           ),
-                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 24,
+                          ),
                           overlayColor: AppColors.primary.withOpacity(0.1),
                         ),
                         child: Slider(
                           value: rfidPower,
                           min: 0,
                           max: 50,
-                          onChanged: (value) => setState(() => rfidPower = value),
+                          onChanged: (value) =>
+                              setState(() => rfidPower = value),
                         ),
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.add, color: AppColors.textTertiary),
+                      icon: const Icon(
+                        Icons.add,
+                        color: AppColors.textTertiary,
+                      ),
                       onPressed: () {
-                        setState(() => rfidPower = (rfidPower + 1).clamp(0, 50));
+                        setState(
+                          () => rfidPower = (rfidPower + 1).clamp(0, 50),
+                        );
                       },
                     ),
                   ],
@@ -1644,11 +1722,26 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
             ),
             child: Row(
               children: [
-                _buildScanButton(Icons.play_circle, 'START', AppColors.success, _startScanning),
+                _buildScanButton(
+                  Icons.play_circle,
+                  'START',
+                  AppColors.success,
+                  _startScanning,
+                ),
                 Container(width: 1, height: 64, color: AppColors.slate100),
-                _buildScanButton(Icons.pause_circle, 'STOP', AppColors.textTertiary, _stopScanning),
+                _buildScanButton(
+                  Icons.pause_circle,
+                  'STOP',
+                  AppColors.textTertiary,
+                  _stopScanning,
+                ),
                 Container(width: 1, height: 64, color: AppColors.slate100),
-                _buildScanButton(Icons.refresh, 'CLEAR', const Color(0xFFE11D48), _clearScannedItems),
+                _buildScanButton(
+                  Icons.refresh,
+                  'CLEAR',
+                  const Color(0xFFE11D48),
+                  _clearScannedItems,
+                ),
               ],
             ),
           ),
@@ -1657,7 +1750,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     );
   }
 
-  Widget _buildScanButton(IconData icon, String label, Color color, VoidCallback onTap) {
+  Widget _buildScanButton(
+    IconData icon,
+    String label,
+    Color color,
+    VoidCallback onTap,
+  ) {
     return Expanded(
       child: Material(
         color: Colors.transparent,
@@ -1693,10 +1791,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       decoration: BoxDecoration(
         color: AppColors.primary.withOpacity(0.1),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: AppColors.primary.withOpacity(0.3),
-          width: 2,
-        ),
+        border: Border.all(color: AppColors.primary.withOpacity(0.3), width: 2),
       ),
       child: Row(
         children: [
@@ -1835,7 +1930,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       context: context,
       title: 'Add to Rack',
       message:
-      'Add ${_scannedItemsMap.length} items to Rack $currentRackNo?',
+          'Add ${_scannedItemsMap.values.where((item) => item.status == ItemStatus.success).length} items to Rack $currentRackNo?',
     );
 
     if (confirm != true) return;
@@ -1875,7 +1970,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     final confirm = await AppModal.showConfirm(
       context: context,
       title: 'Unsaved Items',
-      message: 'You have ${_allRackTagIds.length} scanned items that are not saved yet.\n\nAre you sure you want to exit?',
+      message:
+          'You have ${_allRackTagIds.length} scanned items that are not saved yet.\n\nAre you sure you want to exit?',
       confirmText: 'EXIT',
       cancelText: 'CANCEL',
     );
@@ -1901,10 +1997,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 icon: const Icon(Icons.add, size: 20),
                 label: const Text(
                   'Add',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.slate100,
@@ -1924,84 +2017,139 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 onPressed: _allRackTagIds.isEmpty
                     ? null
                     : () async {
-                  // Validate: must have current form selected
+                        String availableForm = '';
+                        String formerSize = '';
+                        String selectedMachine = 'LK';
 
-                  if (_selectedStockoutForm == null || _selectedMachine == null) {
-                    AppModal.showWarning(
-                      context: context,
-                      title: 'Missing Info',
-                      message: 'Please select a Machine and Form first',
-                    );
-                    return;
-                  }
+                        // Validate based on action type
+                        if (_selectedAction == StockOutAction.production) {
+                          // Production action requires stockout form and machine selection
+                          if (_selectedStockoutForm == null) {
+                            AppModal.showWarning(
+                              context: context,
+                              title: 'Missing Information',
+                              message: 'Please select a Stock Out Form first',
+                            );
+                            return;
+                          }
 
-                  final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
-                  final confirm = await AppModal.showConfirm(
-                    context: context,
-                    title: 'Save Stock Out',
-                    message: 'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nForm: ${_selectedStockoutForm!.stockoutForm}\nMachine: ${_selectedMachine!}',
-                  );
+                          if (_selectedMachine == null) {
+                            AppModal.showWarning(
+                              context: context,
+                              title: 'Missing Information',
+                              message: 'Please select a Machine first',
+                            );
+                            return;
+                          }
 
-                  if (confirm != true) return;
+                          // Safely access stockoutForm with null check
+                          availableForm = _selectedStockoutForm!.stockoutForm;
+                          formerSize = _selectedStockoutForm!.formerSize ?? '';
+                          selectedMachine = _selectedMachine!;
 
-                  AppModal.showLoading(context: context);
+                          // Double-check that form is not empty
+                          if (availableForm.isEmpty) {
+                            AppModal.showWarning(
+                              context: context,
+                              title: 'Invalid Form',
+                              message:
+                                  'Selected Stock Out Form has an empty form number',
+                            );
+                            return;
+                          }
+                        } else {
+                          // For other actions, use the form controller text
+                          availableForm = _stockFormController.text.trim();
 
-                  // Convert racks to API format
-                  final apiRacks = _racks.map((rack) => StockInRackData(
-                    rackNo: rack.rackNo,
-                    bin: rack.bin,
-                    items: rack.items.map((item) {
-                      final bNo = item.basketData?.basketNo;
-                      return StockInItemData(
-                        tagId: item.id,
-                        // Use item.id if basketNo is null or empty
-                        basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
-                        basketFormerQty: item.quantity,
-                      );
-                    }).toList(),
-                  )).toList();
+                          if (availableForm.isEmpty) {
+                            AppModal.showWarning(
+                              context: context,
+                              title: 'Missing Form',
+                              message:
+                                  'Please generate or enter a Stock Form first',
+                            );
+                            return;
+                          }
+                        }
 
-                  // Call API
-                  final response = await ApiServiceStockOut.saveStockOut(
-                    stockoutForm: _selectedStockoutForm!.stockoutForm,
-                    formerSize: _selectedStockoutForm!.formerSize ?? '',
-                    selectedMachine: _selectedMachine!,
-                    stockoutFrom: '',
-                    action: _selectedAction != null ? _selectedAction!.name : '',
-                    racks: apiRacks,
-                  );
+                        final totalItems = _racks.fold<int>(
+                          0,
+                          (sum, r) => sum + r.items.length,
+                        );
 
-                  if (mounted) AppModal.hideLoading(context);
+                        final confirm = await AppModal.showConfirm(
+                          context: context,
+                          title: 'Save Stock Out',
+                          message:
+                              'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nForm: $availableForm\nAction: ${_selectedAction?.displayName}',
+                        );
 
-                  if (response.success) {
-                    _saveRackCache();
+                        if (confirm != true) return;
 
-                    setState(() {
-                      _racks.clear();
-                      _allRackTagIds.clear();
-                      _scannedItemsMap.clear();
-                    });
+                        if (mounted) AppModal.showLoading(context: context);
 
-                    AppModal.showSuccess(
-                      context: context,
-                      title: 'Success',
-                      message: 'Stock In saved successfully!\n\nBatch: ${response.batchNo}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
-                    );
-                  } else {
-                    AppModal.showError(
-                      context: context,
-                      title: 'Save Failed',
-                      message: response.message,
-                    );
-                  }
-                },
+                        // Convert racks to API format
+                        final apiRacks = _racks
+                            .map(
+                              (rack) => StockInRackData(
+                                rackNo: rack.rackNo,
+                                bin: rack.bin,
+                                items: rack.items.map((item) {
+                                  final bNo = item.basketData?.basketNo;
+                                  return StockInItemData(
+                                    tagId: item.id,
+                                    // Use item.id if basketNo is null or empty
+                                    basketNo: (bNo != null && bNo.isNotEmpty)
+                                        ? bNo
+                                        : item.id,
+                                    basketFormerQty: item.quantity,
+                                  );
+                                }).toList(),
+                              ),
+                            )
+                            .toList();
+
+                        // Call API
+                        final response = await ApiServiceStockOut.saveStockOut(
+                          stockoutForm: availableForm,
+                          formerSize: formerSize,
+                          selectedMachine: selectedMachine,
+                          stockoutFrom: '',
+                          action: _selectedAction != null
+                              ? _selectedAction!.name
+                              : '',
+                          racks: apiRacks,
+                        );
+
+                        if (mounted) AppModal.hideLoading(context);
+
+                        if (response.success) {
+                          _saveRackCache();
+
+                          setState(() {
+                            _racks.clear();
+                            _allRackTagIds.clear();
+                            _scannedItemsMap.clear();
+                          });
+
+                          AppModal.showSuccess(
+                            context: context,
+                            title: 'Success',
+                            message:
+                                'Stock In saved successfully!\n\nBatch: ${response.batchNo}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+                          );
+                        } else {
+                          AppModal.showError(
+                            context: context,
+                            title: 'Save Failed',
+                            message: response.message,
+                          );
+                        }
+                      },
                 icon: const Icon(Icons.save, size: 20),
                 label: const Text(
                   'SAVE ALL',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,

@@ -1953,7 +1953,10 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
                     message: 'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nLocation: X',
                   );
 
-                  if (confirm != true) return;
+                  if (confirm != true) {
+                    if (mounted) AppModal.hideLoading(context);
+                    return;
+                  }
 
                   // Convert racks to API format
                   final apiRacks = _racks.map((rack) => EmptyStockRackData(

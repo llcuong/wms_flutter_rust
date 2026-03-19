@@ -73,7 +73,7 @@ class HomeScreen extends StatelessWidget {
 
             _buildQuickActionCard(
               context,
-              title: 'Empty Former Stock In',
+              title: 'Empty Basket Stock In',
               subtitle: 'Scan and record incoming empty basket stock',
               icon: Icons.input,
               color: const Color(0xFF0D9488), // Teal
@@ -84,7 +84,7 @@ class HomeScreen extends StatelessWidget {
 
             _buildQuickActionCard(
               context,
-              title: 'Empty Former Stock Out',
+              title: 'Empty Basket Stock Out',
               subtitle: 'Process outgoing empty basket stock',
               icon: Icons.output,
               color: const Color(0xFFEA580C), // Deep Orange
@@ -106,8 +106,8 @@ class HomeScreen extends StatelessWidget {
 
             _buildQuickActionCard(
               context,
-              title: 'Former Cleaning',
-              subtitle: 'Move formers to cleaning area',
+              title: 'Cleaning & Vendor',
+              subtitle: 'Move formers to cleaning or vendor area',
               icon: Icons.cleaning_services,
               color: const Color(0xFF2563EB), // Blue
               route: AppRouter.formerCleaning,
