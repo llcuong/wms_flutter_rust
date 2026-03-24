@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../components/common/warehouse_selection_modal.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/custom_card.dart';
 import '../components/common/app_modal.dart';
 import '../components/common/basket_detail_modal.dart';
+import '../helpers/warehouse_validator.dart';
 import '../widgets/bin_selection_modal.dart';
 import '../components/common/rack_detail_modal.dart';
 import '../components/common/filled_basket_qty_modal.dart';
@@ -23,6 +25,9 @@ class FormerStockInScreen extends StatefulWidget {
 
 class _FormerStockInScreenState extends State<FormerStockInScreen> {
   final RfidScanner _rfidScanner = RfidScanner();
+
+  // Warehouse
+  String _warehouseCode = '';
 
   String selectedForm = 'LN25461127UA';
   double rfidPower = 25.0;
@@ -123,6 +128,9 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
   Future<void> _initializeRfid() async {
     try {
       setState(() => scannerStatus = ScannerStatus.initializing);
+
+      final warehouse = await WarehouseSelectionModal.getSavedWarehouse();
+      _warehouseCode = warehouse != null ? warehouse.shortName : 'GD';
       
       final initSuccess = await _rfidScanner.init();
       if (!initSuccess) {
@@ -225,13 +233,36 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
     final batchIds = batchMap.keys.toList();
 
     try {
-      final baskets = await ApiService.getBasketsStockInBatch(batchIds);
+      final baskets = await ApiService.getBasketsStockInBatch(batchIds, warehouse: _warehouseCode);
 
       if (!mounted) return;
 
+      // Validate baskets - this will stop scanning if invalid tags found
+      final validBaskets = WarehouseValidator.validateAndFilter(
+        baskets,
+        _warehouseCode,
+        context,
+        originalTagIds: batchIds,
+        onInvalidFound: () {
+          // Stop scanning immediately when invalid tags found
+          _rfidScanner.stopScan();
+          setState(() {
+            isScanning = false;
+            scannerStatus = ScannerStatus.stopped;
+          });
+        },
+      );
+
+      // If invalid baskets found, validBaskets will be empty, so don't process anything
+      if (validBaskets.isEmpty) {
+        _isProcessingBatch = false;
+        return;
+      }
+
       setState(() {
-        for (final basket in baskets) {
+        for (final basket in validBaskets) {
           final tagId = basket.tagId;
+
           // Re-check duplicates just in case
           if (_scannedItemsMap.containsKey(tagId)) continue;
 
@@ -256,9 +287,16 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
           );
         }
       });
+
     } catch (e) {
       print('Batch processing error: $e');
-      // Optional: re-queue or handle error items
+      if (mounted) {
+        AppModal.showError(
+          context: context,
+          title: 'Lỗi',
+          message: 'Có lỗi xảy ra khi xử lý batch: $e',
+        );
+      }
     } finally {
       _isProcessingBatch = false;
       if (_pendingTags.isNotEmpty) {
@@ -280,7 +318,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
     if (selectedQty == null) return;
 
     try {
-      final raw = await ApiService.getBasketsStockInBatch([tagData.tagId]);
+      final raw = await ApiService.getBasketsStockInBatch([tagData.tagId], warehouse: _warehouseCode);
 
       _singleTagCaptured = false;
 
@@ -291,6 +329,15 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
       }
 
       final basketData = raw.first;
+
+      // Validate single basket
+      if (!WarehouseValidator.isBasketValidForWarehouse(basketData, _warehouseCode)) {
+        final warningMsg = WarehouseValidator.getBasketWarningMessage(basketData, _warehouseCode);
+        if (warningMsg != null) {
+          _showWarning('Warehouse warning', warningMsg);
+        }
+        return;
+      }
 
       setState(() {
         _scannedItemsMap[tagData.tagId] = ScannedItem(
@@ -1033,7 +1080,7 @@ class _FormerStockInScreenState extends State<FormerStockInScreen> {
         children: [
           buildButton(BasketMode.full, 'Full basket'),
           buildButton(BasketMode.filled, 'Filled'),
-          buildButton(BasketMode.empty, 'Empty'),
+          // buildButton(BasketMode.empty, 'Empty'),
         ],
       ),
     );

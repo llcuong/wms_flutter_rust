@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/app_modal.dart';
 import '../components/common/rfid_scanned_items_modal.dart';
+import '../helpers/warehouse_validator.dart';
 import '../widgets/bin_selection_modal.dart';
 import '../components/common/filled_basket_qty_modal.dart';
 
@@ -32,6 +33,9 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     with SingleTickerProviderStateMixin {
   
   late TabController _tabController;
+
+  // Warehouse
+  String _warehouseCode = '';
   
   // Form Controllers
   final _dnController = TextEditingController(text: 'FN0000002');
@@ -366,12 +370,33 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     }
     
     try {
-      final baskets = await ApiService.getBasketsBatch(batchIds);
+      final baskets = await ApiService.getBasketsBatch(batchIds, warehouse: _warehouseCode);
 
       if (!mounted) return;
 
+      final validBaskets = WarehouseValidator.validateAndFilter(
+        baskets,
+        _warehouseCode,
+        context,
+        originalTagIds: batchIds,
+        onInvalidFound: () {
+          // Stop scanning immediately when invalid tags found
+          _rfidScanner.stopScan();
+          setState(() {
+            isScanning = false;
+            scannerStatus = ScannerStatus.stopped;
+          });
+        },
+      );
+
+      // If invalid baskets found, validBaskets will be empty, so don't process anything
+      if (validBaskets.isEmpty) {
+        _isProcessingBatch = false;
+        return;
+      }
+
       // Update Provider with results
-      for (final basket in baskets) {
+      for (final basket in validBaskets) {
         final tagId = basket.tagId;
         // Re-check duplicates just in case (Provider check handles it on add, but double check safe)
         if (provider.isTagScanned(tagId)) continue;
@@ -422,9 +447,16 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
     if (selectedQty == null) return;
 
     try {
-      final basketData = await ApiService.getBasketData(tagData.tagId);
+      final basketData = await ApiService.getBasketsBatch(tagData.tagId as List<String>, warehouse: _warehouseCode);
 
-      if (basketData == null) return;
+      // Validate single basket
+      if (!WarehouseValidator.isBasketValidForWarehouse(basketData.first, _warehouseCode)) {
+        final warningMsg = WarehouseValidator.getBasketWarningMessage(basketData.first, _warehouseCode);
+        if (warningMsg != null) {
+          _showWarning('Warehouse warning', warningMsg);
+        }
+        return;
+      }
 
       setState(() {
         // _scannedItemsMap[tagData.tagId] = ScannedItem(...) ...
@@ -432,11 +464,11 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
         final item = ScannedItem(
           id: tagData.tagId,
           quantity: selectedQty,
-          vendor: basketData.basketVendor,
-          bin: basketData.basketPurchaseOrder,
+          vendor: basketData[0].basketVendor,
+          bin: basketData[0].basketPurchaseOrder,
           status: ItemStatus.success,
           rssi: tagData.rssi,
-          basketData: basketData,
+          basketData: basketData[0],
         );
 
         Provider.of<FormerMasterDataProvider>(context, listen: false).addScannedItem(item);

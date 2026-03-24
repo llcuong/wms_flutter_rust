@@ -20,6 +20,8 @@ import 'package:wms_flutter/services/rfid_scanner.dart';
 import 'package:wms_flutter/services/api_service.dart';
 import 'package:wms_flutter/models/scanned_item.dart';
 
+import '../components/common/warehouse_selection_modal.dart';
+import '../helpers/warehouse_validator.dart';
 import '../widgets/bin_selection_modal.dart';
 
 class FormerStockOutScreen extends StatefulWidget {
@@ -33,8 +35,11 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     with TickerProviderStateMixin {
   TabController? _tabController;
 
+  // Warehouse
+  String _warehouseCode = '';
+
   // Selected Action
-  StockOutAction? _selectedAction;
+  StockOutActionResult? _selectedAction;
 
   // Form Controllers - New API structure
   List<String> _bins = [];
@@ -58,6 +63,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   final RfidScanner _rfidScanner = RfidScanner();
   double rfidPower = 25.0;
   bool isScanning = false;
+  bool isInitialized = false;
   bool isConnected = false;
   ScannerStatus scannerStatus = ScannerStatus.disconnected;
   BasketMode _basketMode = BasketMode.full;
@@ -82,13 +88,13 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   bool _singleTagCaptured = false;
 
   bool get _isScanTabActive {
-    if (_selectedAction == StockOutAction.production) {
+    if (_selectedAction?.action == StockOutAction.production) {
       return _tabController?.index == 1;
     }
     return true;
   }
 
-  bool get _showTabBar => _selectedAction == StockOutAction.production;
+  bool get _showTabBar => _selectedAction?.action == StockOutAction.production;
 
   @override
   void initState() {
@@ -132,7 +138,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       return;
     }
 
-    if (action == StockOutAction.exit) {
+    if (action.action == StockOutAction.exit) {
       if (mounted) Navigator.pop(context);
       return;
     }
@@ -143,7 +149,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     });
 
     // Load machines for production mode
-    if (action == StockOutAction.production) {
+    if (action.action == StockOutAction.production) {
       await _loadMachines();
     } else {
       _generateStockForm();
@@ -171,13 +177,11 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     });
 
     // Load machines if switching to production
-    if (action == StockOutAction.production) {
+    if (action.action == StockOutAction.production) {
       await _loadMachines();
     } else {
       _generateStockForm();
     }
-
-    print(_selectedAction?.name);
 
     await _restoreRackCache();
   }
@@ -273,7 +277,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     if (_selectedAction == null) return;
 
     // For production mode, try to use the selected stockout form
-    if (_selectedAction == StockOutAction.production &&
+    if (_selectedAction?.action == StockOutAction.production &&
         _selectedStockoutForm != null) {
       setState(() {
         _stockFormController.text = _selectedStockoutForm!.stockoutForm;
@@ -304,10 +308,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
     String stockForm;
 
-    if (_selectedAction == StockOutAction.production) {
+    if (_selectedAction?.action == StockOutAction.production) {
       stockForm = 'GN$yy$mm$dd$machineNumber${_selectedLine ?? ''}';
     } else {
-      final prefix = 'LK';
+      final prefix = _selectedAction?.transitSelection?.to == 'LK'
+          ? 'LK'
+          : 'GD';
 
       final random = Random();
       final randomDigits = random.nextInt(100).toString().padLeft(2, '0');
@@ -327,6 +333,9 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   Future<void> _initializeRfid() async {
     try {
       setState(() => scannerStatus = ScannerStatus.initializing);
+
+      final warehouse = await WarehouseSelectionModal.getSavedWarehouse();
+      _warehouseCode = warehouse != null ? warehouse.shortName : 'GD';
 
       final initSuccess = await _rfidScanner.init();
       if (!initSuccess) {
@@ -393,7 +402,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       });
 
       final selectedQty = await FilledBasketQtyModal.show(context);
-      if (selectedQty == null) return;
+      if (selectedQty == null) {
+        _singleTagCaptured = false;
+        return;
+      }
       quantity = selectedQty;
     }
 
@@ -441,6 +453,9 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   }
 
   Future<void> _fetchAndProcessBatch() async {
+    if (_basketMode == BasketMode.filled) {
+      _singleTagCaptured = false;
+    }
     try {
       // Get up to _batchSize tags from the queue
       final batchTags = <String>[];
@@ -454,17 +469,39 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
       }
       List<BasketData> batchData = [];
       // Fetch batch data from API
-      if (_selectedAction == StockOutAction.production) {
+      if (_selectedAction?.action == StockOutAction.production) {
         batchData = await ApiService.getBasketsStockOutBatch(
           batchTags,
           binLocation: _selectedBin,
+          warehouse: _warehouseCode,
         );
       } else {
-        batchData = await ApiService.getBasketsStockOutBatch(batchTags);
+        batchData = await ApiService.getBasketsStockOutBatch(batchTags, warehouse: _warehouseCode);
+      }
+
+      final validBaskets = WarehouseValidator.validateAndFilter(
+        batchData,
+        _warehouseCode,
+        context,
+        originalTagIds: batchTags,
+        onInvalidFound: () {
+          // Stop scanning immediately when invalid tags found
+          _rfidScanner.stopScan();
+          setState(() {
+            isScanning = false;
+            scannerStatus = ScannerStatus.stopped;
+          });
+        },
+      );
+
+      // If invalid baskets found, validBaskets will be empty, so don't process anything
+      if (validBaskets.isEmpty) {
+        _isFetchingBatch = false;
+        return;
       }
 
       // Create a map for quick lookup
-      final dataMap = {for (var item in batchData) item.tagId: item};
+      final dataMap = {for (var item in validBaskets) item.tagId: item};
 
       // Update scanned items with fetched data
       for (final tagId in batchTags) {
@@ -522,6 +559,13 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
           isConnected = false;
           isScanning = false;
           scannerStatus = ScannerStatus.disconnected;
+        });
+        _showWarning('Disconnected', 'RFID scanner disconnected');
+        break;
+      case ConnectionStatus.scanStarted:
+        setState(() {
+          isScanning = true;
+          scannerStatus = ScannerStatus.scanning;
         });
         break;
       case ConnectionStatus.scanStopped:
@@ -680,15 +724,15 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
             Row(
               children: [
                 Icon(
-                  _selectedAction!.icon,
+                  _selectedAction!.action.icon,
                   size: 12,
-                  color: _selectedAction!.color,
+                  color: _selectedAction!.action.color,
                 ),
                 const SizedBox(width: 4),
                 Text(
-                  _selectedAction!.displayName,
+                  _selectedAction!.action.displayName,
                   style: TextStyle(
-                    color: _selectedAction!.color,
+                    color: _selectedAction!.action.color,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
@@ -702,7 +746,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
           Container(
             margin: const EdgeInsets.only(right: 12),
             child: Material(
-              color: _selectedAction!.color.withOpacity(0.1),
+              color: _selectedAction!.action.color.withOpacity(0.1),
               borderRadius: BorderRadius.circular(12),
               child: InkWell(
                 onTap: _changeAction,
@@ -715,15 +759,15 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                   child: Row(
                     children: [
                       Icon(
-                        _selectedAction!.icon,
+                        _selectedAction!.action.icon,
                         size: 18,
-                        color: _selectedAction!.color,
+                        color: _selectedAction!.action.color,
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        _selectedAction!.displayName,
+                        _selectedAction!.action.displayName,
                         style: TextStyle(
-                          color: _selectedAction!.color,
+                          color: _selectedAction!.action.color,
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
                         ),
@@ -732,7 +776,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                       Icon(
                         Icons.keyboard_arrow_down,
                         size: 16,
-                        color: _selectedAction!.color,
+                        color: _selectedAction!.action.color,
                       ),
                     ],
                   ),
@@ -1870,7 +1914,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
   // Rack caching functions
   String get _rackCacheKey {
-    final action = _selectedAction?.name ?? 'unknown';
+    final action = _selectedAction?.action.name ?? 'unknown';
     return 'stockout_${action}_rack_temp';
   }
 
@@ -2017,13 +2061,17 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                 onPressed: _allRackTagIds.isEmpty
                     ? null
                     : () async {
+                        // ---------- 1. Resolve form fields per action type ----------
                         String availableForm = '';
                         String formerSize = '';
-                        String selectedMachine = 'LK';
+                        String stockoutFrom =
+                            ''; // NEW: the originating location
+                        String stockoutTo = ''; // NEW: the destination location
+                        String actionCode =
+                            ''; // what we send as `action` to backend
 
-                        // Validate based on action type
-                        if (_selectedAction == StockOutAction.production) {
-                          // Production action requires stockout form and machine selection
+                        if (_selectedAction!.isProduction) {
+                          // ── Production ──────────────────────────────────────────
                           if (_selectedStockoutForm == null) {
                             AppModal.showWarning(
                               context: context,
@@ -2032,7 +2080,6 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
-
                           if (_selectedMachine == null) {
                             AppModal.showWarning(
                               context: context,
@@ -2041,13 +2088,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
-
-                          // Safely access stockoutForm with null check
                           availableForm = _selectedStockoutForm!.stockoutForm;
-                          formerSize = _selectedStockoutForm!.formerSize ?? '';
-                          selectedMachine = _selectedMachine!;
-
-                          // Double-check that form is not empty
                           if (availableForm.isEmpty) {
                             AppModal.showWarning(
                               context: context,
@@ -2057,10 +2098,26 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
-                        } else {
-                          // For other actions, use the form controller text
+                          formerSize = _selectedStockoutForm!.formerSize ?? '';
+                          stockoutFrom =
+                              ''; // production has no "from" location
+                          stockoutTo =
+                              _selectedMachine!; // machine / area is the destination
+                          actionCode =
+                              'production'; // backend distinguishes by this value
+                        } else if (_selectedAction!.isTransit) {
+                          // ── Transit ─────────────────────────────────────────────
+                          final transit = _selectedAction!.transitSelection;
+                          if (transit == null) {
+                            AppModal.showWarning(
+                              context: context,
+                              title: 'Missing Information',
+                              message:
+                                  'Please select a transit direction first',
+                            );
+                            return;
+                          }
                           availableForm = _stockFormController.text.trim();
-
                           if (availableForm.isEmpty) {
                             AppModal.showWarning(
                               context: context,
@@ -2070,73 +2127,87 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
+                          formerSize = _selectedSize;
+                          stockoutFrom = transit.from; // e.g. "GD" or "LK"
+                          stockoutTo = transit.to; // e.g. "LK" or "GD"
+                          // actionCode uses the canonical transit code so the backend can branch:
+                          //   TransitDirection.gdToLk → "toLK"
+                          //   TransitDirection.lkToGd → "toGD"
+                          actionCode = transit.code == 'gd_to_lk'
+                              ? 'toLK'
+                              : 'toGD';
                         }
 
+                        // ---------- 2. Confirmation dialog ----------
                         final totalItems = _racks.fold<int>(
                           0,
                           (sum, r) => sum + r.items.length,
                         );
+                        final actionDisplay = _selectedAction!.isProduction
+                            ? 'Production'
+                            : 'Transit ${_selectedAction!.transitSelection!.displayName}';
 
                         final confirm = await AppModal.showConfirm(
                           context: context,
                           title: 'Save Stock Out',
                           message:
-                              'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nForm: $availableForm\nAction: ${_selectedAction?.displayName}',
+                              'Save ${_racks.length} rack(s) with $totalItems items to database?\n\n'
+                              'Form: $availableForm\nAction: $actionDisplay',
                         );
-
                         if (confirm != true) return;
 
                         if (mounted) AppModal.showLoading(context: context);
 
-                        // Convert racks to API format
-                        final apiRacks = _racks
-                            .map(
-                              (rack) => StockInRackData(
-                                rackNo: rack.rackNo,
-                                bin: rack.bin,
-                                items: rack.items.map((item) {
-                                  final bNo = item.basketData?.basketNo;
-                                  return StockInItemData(
-                                    tagId: item.id,
-                                    // Use item.id if basketNo is null or empty
-                                    basketNo: (bNo != null && bNo.isNotEmpty)
-                                        ? bNo
-                                        : item.id,
-                                    basketFormerQty: item.quantity,
-                                  );
-                                }).toList(),
-                              ),
-                            )
-                            .toList();
+                        // ---------- 3. Build API racks payload ----------
+                        final apiRacks = _racks.map((rack) {
+                          return StockInRackData(
+                            rackNo: rack.rackNo,
+                            bin: rack.bin,
+                            items: rack.items.map((item) {
+                              final bNo = item.basketData?.basketNo;
+                              return StockInItemData(
+                                tagId: item.id,
+                                basketNo: (bNo != null && bNo.isNotEmpty)
+                                    ? bNo
+                                    : item.id,
+                                basketFormerQty: item.quantity,
+                              );
+                            }).toList(),
+                          );
+                        }).toList();
 
-                        // Call API
+                        // ---------- 4. Call backend ----------
                         final response = await ApiServiceStockOut.saveStockOut(
                           stockoutForm: availableForm,
                           formerSize: formerSize,
-                          selectedMachine: selectedMachine,
-                          stockoutFrom: '',
-                          action: _selectedAction != null
-                              ? _selectedAction!.name
-                              : '',
+                          selectedMachine: stockoutTo,
+                          // backend field maps to stockout_to in DB
+                          stockoutFrom: stockoutFrom,
+                          // properly set for transit
+                          action: actionCode,
+                          // "production" | "toLK" | "toGD"
                           racks: apiRacks,
                         );
 
                         if (mounted) AppModal.hideLoading(context);
 
                         if (response.success) {
-                          _saveRackCache();
-
+                           // persist before clearing
                           setState(() {
                             _racks.clear();
                             _allRackTagIds.clear();
                             _scannedItemsMap.clear();
                           });
+                          await _saveRackCache();
 
                           AppModal.showSuccess(
                             context: context,
                             title: 'Success',
                             message:
-                                'Stock In saved successfully!\n\nBatch: ${response.batchNo}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+                                'Stock Out saved successfully!\n\n'
+                                'Batch: ${response.batchNo}\n'
+                                'Baskets: ${response.totalBaskets}\n'
+                                'Formers: ${response.totalFormers}',
                           );
                         } else {
                           AppModal.showError(

@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../components/common/warehouse_selection_modal.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/custom_card.dart';
 import '../components/common/app_modal.dart';
 import '../components/common/basket_detail_modal.dart';
+import '../helpers/warehouse_validator.dart';
 import '../widgets/bin_selection_modal.dart';
 import '../components/common/rack_detail_modal.dart';
 import '../components/common/filled_basket_qty_modal.dart';
@@ -23,6 +25,9 @@ class FormerMovingScreen extends StatefulWidget {
 
 class _FormerMovingScreenState extends State<FormerMovingScreen> {
   final RfidScanner _rfidScanner = RfidScanner();
+
+  // Warehouse
+  String _warehouseCode = '';
 
   String selectedForm = 'LN25461127UA';
   double rfidPower = 25.0;
@@ -124,6 +129,9 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
   Future<void> _initializeRfid() async {
     try {
       setState(() => scannerStatus = ScannerStatus.initializing);
+
+      final warehouse = await WarehouseSelectionModal.getSavedWarehouse();
+      _warehouseCode = warehouse != null ? warehouse.shortName : 'GD';
 
       final initSuccess = await _rfidScanner.init();
       if (!initSuccess) {
@@ -232,12 +240,33 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
     final batchIds = batchMap.keys.toList();
 
     try {
-      final baskets = await ApiService.getBasketsStockOutBatch(batchIds);
+      final baskets = await ApiService.getBasketsStockOutBatch(batchIds, warehouse: _warehouseCode);
 
       if (!mounted) return;
 
+      final validBaskets = WarehouseValidator.validateAndFilter(
+        baskets,
+        _warehouseCode,
+        context,
+        originalTagIds: batchIds,
+        onInvalidFound: () {
+          // Stop scanning immediately when invalid tags found
+          _rfidScanner.stopScan();
+          setState(() {
+            isScanning = false;
+            scannerStatus = ScannerStatus.stopped;
+          });
+        },
+      );
+
+      // If invalid baskets found, validBaskets will be empty, so don't process anything
+      if (validBaskets.isEmpty) {
+        _isProcessingBatch = false;
+        return;
+      }
+
       setState(() {
-        for (final basket in baskets) {
+        for (final basket in validBaskets) {
           final tagId = basket.tagId;
           // Re-check duplicates just in case
           if (_scannedItemsMap.containsKey(tagId)) continue;
@@ -280,7 +309,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
     if (selectedQty == null) return;
 
     try {
-      final raw = await ApiService.getBasketsStockInBatch([tagData.tagId]);
+      final raw = await ApiService.getBasketsStockOutBatch([tagData.tagId], warehouse: _warehouseCode);
 
       _singleTagCaptured = false;
 
@@ -291,6 +320,15 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
       }
 
       final basketData = raw.first;
+
+      // Validate single basket
+      if (!WarehouseValidator.isBasketValidForWarehouse(basketData, _warehouseCode)) {
+        final warningMsg = WarehouseValidator.getBasketWarningMessage(basketData, _warehouseCode);
+        if (warningMsg != null) {
+          _showWarning('Warehouse warning', warningMsg);
+        }
+        return;
+      }
 
       setState(() {
         _scannedItemsMap[tagData.tagId] = ScannedItem(

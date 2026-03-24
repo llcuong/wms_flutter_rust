@@ -3,6 +3,7 @@ import 'package:wms_flutter/screens/former_cleaning_screen.dart';
 import 'package:wms_flutter/screens/former_moving_screen.dart';
 import '../../screens/empty_former_stock_in_screen.dart';
 import '../../screens/empty_former_stock_out_screen.dart';
+import '../../screens/former_to_vendor_screen.dart';
 import '../../screens/home_screen.dart';
 import '../../screens/former_stock_in_screen.dart';
 import '../../screens/former_stock_out_screen.dart';
@@ -18,6 +19,7 @@ class AppRouter {
   static const String formerMasterData = '/former-master-data';
   static const String formerMoving = '/former-moving';
   static const String formerCleaning = '/former-cleaning';
+  static const String formerToVendor = '/former-to-vendor';
   static const String rfidTest = '/rfid-test';
 
   static Route<dynamic> onGenerateRoute(RouteSettings settings) {
@@ -38,6 +40,8 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const FormerMovingScreen());
       case formerCleaning:
         return MaterialPageRoute(builder: (_) => const FormerCleaningScreen());
+      case formerToVendor:
+        return MaterialPageRoute(builder: (_) => const FormerToVendorScreen());
       case rfidTest:
         return MaterialPageRoute(builder: (_) => const RfidTestScreen());
       default:

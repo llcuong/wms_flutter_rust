@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:wms_flutter/services/api_service.dart';
+import 'package:wms_flutter/services/cookie_service.dart';
 import 'config/routes/app_router.dart';
 import 'config/theme/app_theme.dart';
 import 'config/localization/app_strings.dart';
@@ -12,6 +14,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await ServerConfigService.init(); // Load saved server config
   await AppStrings.init(locale: 'vi');
+  await CookieService.init();
+  await ApiService.init();
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,

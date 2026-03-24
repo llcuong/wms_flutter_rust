@@ -31,17 +31,17 @@ struct AppState {
 
 impl AppState {
     // Helper method to get the appropriate pool and prefix based on database type
-    fn get_db_config(&self, use_lk: bool) -> (&Pool<ConnectionManager>, &str) {
-        if use_lk {
-            if let Some(ref pool) = self.lk_pool {
-                if let Some(ref prefix) = self.lk_db_prefix {
-                    return (pool, prefix);
-                }
-            }
-            tracing::warn!("⚠️ LK database not configured, falling back to default");
-        }
-        (&self.pool, &self.db_prefix)
-    }
+    // fn get_db_config(&self, use_lk: bool) -> (&Pool<ConnectionManager>, &str) {
+    //     if use_lk {
+    //         if let Some(ref pool) = self.lk_pool {
+    //             if let Some(ref prefix) = self.lk_db_prefix {
+    //                 return (pool, prefix);
+    //             }
+    //         }
+    //         tracing::warn!("⚠️ LK database not configured, falling back to default");
+    //     }
+    //     (&self.pool, &self.db_prefix)
+    // }
 }
 
 /// Returns the database schema prefix, e.g. "[GDWMS-dev].[dbo]"
@@ -282,23 +282,40 @@ async fn handle_stockin_batch_baskets(
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
+    
+    // Build bin condition if warehouse is provided
+    // let bin_condition = if let Some(warehouse) = &payload.warehouse {
+    //     let opposite = match warehouse.as_str() {
+    //         "GD" => "LK",
+    //         "LK" => "GD",
+    //         _ => "",
+    //     };
+    //     if !opposite.is_empty() {
+    //         format!("AND fbd.bin <> '{}'", opposite)
+    //     } else {
+    //         String::new()
+    //     }
+    // } else {
+    //     String::new()
+    // };
 
-    // Standard query for scanning baskets
     let query = format!(
         r#"
         SELECT DISTINCT
             bmd.basket_no,
             bmd.basket_vendor,
             bmd.basket_purchase_order,
-            bmd.is_active
+            bmd.is_active,
+            bd.bin
         FROM {db}.[wh_former_basket_master_data] bmd
+        JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
         WHERE bmd.basket_no IN ({in_clause})
         AND EXISTS (
             SELECT 1 
             FROM {db}.[wh_former_former_bin_data] fbd 
             WHERE fbd.basket_no = bmd.basket_no 
-            AND fbd.bin LIKE '%NBR%'
-            AND fbd.bin <> 'X'
+            AND (fbd.bin LIKE '%NBR%' OR fbd.bin IN ('GD', 'LK'))
+            AND fbd.bin NOT IN ('X')
         )
         "#
     );
@@ -339,6 +356,7 @@ async fn handle_stockin_batch_baskets(
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
+                        bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
                     };
                     data.push(basket);
                 }
@@ -372,7 +390,7 @@ async fn handle_stockin_batch_baskets(
     )
 }
 
-// stockout batch baskets
+/// Handle stockout batch baskets request
 async fn handle_stockout_batch_baskets(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<BatchRequest>,
@@ -415,29 +433,43 @@ async fn handle_stockout_batch_baskets(
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
 
-    let bin_condition = if payload.bin_location.is_some() {
-        format!("AND fbd.bin = @P{}", count + 1)
-    } else {
-        "AND fbd.bin NOT LIKE '%NBR%'".to_string()
-    };
+    // Build condition string based on available filters
+    // let bin_condition = if let Some(bin) = &payload.bin_location {
+    //     format!("AND fbd.bin = '{}'", bin)
+    // } else if let Some(warehouse) = &payload.warehouse {
+    //     let opposite = match warehouse.as_str() {
+    //         "GD" => "LK",
+    //         "LK" => "GD",
+    //         _ => "",
+    //     };
+    //     if !opposite.is_empty() {
+    //         format!("AND fbd.bin <> '{}'", opposite)
+    //     } else {
+    //         "AND fbd.bin NOT LIKE '%NBR%'".to_string()
+    //     }
+    // } else {
+    //     "AND fbd.bin NOT LIKE '%NBR%'".to_string()
+    // };
 
-    // Standard query for scanning baskets
+    // Simple query with condition string
     let query = format!(
         r#"
-    SELECT DISTINCT
-        bmd.basket_no,
-        bmd.basket_vendor,
-        bmd.basket_purchase_order,
-        bmd.is_active
-    FROM {db}.[wh_former_basket_master_data] bmd
-    WHERE bmd.basket_no IN ({in_clause})
-    AND EXISTS (
-        SELECT 1 
-        FROM {db}.[wh_former_former_bin_data] fbd 
-        WHERE fbd.basket_no = bmd.basket_no 
-        {bin_condition}
-    )
-    "#
+        SELECT DISTINCT
+            bmd.basket_no,
+            bmd.basket_vendor,
+            bmd.basket_purchase_order,
+            bmd.is_active,
+            bd.bin
+        FROM {db}.[wh_former_basket_master_data] bmd
+        JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
+        WHERE bmd.basket_no IN ({in_clause})
+        AND EXISTS (
+            SELECT 1 
+            FROM {db}.[wh_former_former_bin_data] fbd 
+            WHERE fbd.basket_no = bmd.basket_no 
+            
+        )
+        "#
     );
 
     // LOGGING: Print the full query and parameters
@@ -449,15 +481,8 @@ async fn handle_stockout_batch_baskets(
 
     // Build query with parameters
     let mut query_builder = tiberius::Query::new(query);
-
-    // Bind tag_ids (@P1 .. @Pcount)
     for tag_id in &payload.tag_ids {
         query_builder.bind(tag_id.as_str());
-    }
-
-    // Bind bin as last parameter (@Pcount+1)
-    if let Some(bin) = &payload.bin_location {
-        query_builder.bind(bin.as_str());
     }
 
     // Execute query
@@ -483,6 +508,7 @@ async fn handle_stockout_batch_baskets(
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
+                        bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
                     };
                     data.push(basket);
                 }
@@ -517,49 +543,49 @@ async fn handle_stockout_batch_baskets(
 }
 
 /// Create SQL Server connection pool
-async fn create_db_pool() -> Result<Pool<ConnectionManager>, Box<dyn std::error::Error>> {
-    // Get database configuration from environment
-    let host = std::env::var("DATABASE_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let port: u16 = std::env::var("DATABASE_PORT")
-        .unwrap_or_else(|_| "1433".to_string())
-        .parse()?;
-    let database = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "GDWMS".to_string());
-    let user = std::env::var("DATABASE_USER").unwrap_or_else(|_| "sa".to_string());
-    let password = std::env::var("DATABASE_PASSWORD").expect("DATABASE_PASSWORD must be set");
+// async fn create_db_pool() -> Result<Pool<ConnectionManager>, Box<dyn std::error::Error>> {
+//     // Get database configuration from environment
+//     let host = std::env::var("DATABASE_HOST").unwrap_or_else(|_| "localhost".to_string());
+//     let port: u16 = std::env::var("DATABASE_PORT")
+//         .unwrap_or_else(|_| "1433".to_string())
+//         .parse()?;
+//     let database = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "GDWMS".to_string());
+//     let user = std::env::var("DATABASE_USER").unwrap_or_else(|_| "sa".to_string());
+//     let password = std::env::var("DATABASE_PASSWORD").expect("DATABASE_PASSWORD must be set");
 
-    tracing::info!(
-        "📦 Connecting to SQL Server: {}:{}/{}",
-        host,
-        port,
-        database
-    );
+//     tracing::info!(
+//         "📦 Connecting to SQL Server: {}:{}/{}",
+//         host,
+//         port,
+//         database
+//     );
 
-    // Configure SQL Server connection
-    let mut config = Config::new();
-    config.host(&host);
-    config.port(port);
-    config.database(&database);
-    config.authentication(AuthMethod::sql_server(&user, &password));
-    config.encryption(EncryptionLevel::Off); // Change to Required for production with SSL
-    config.trust_cert();
+//     // Configure SQL Server connection
+//     let mut config = Config::new();
+//     config.host(&host);
+//     config.port(port);
+//     config.database(&database);
+//     config.authentication(AuthMethod::sql_server(&user, &password));
+//     config.encryption(EncryptionLevel::Off); // Change to Required for production with SSL
+//     config.trust_cert();
 
-    // Create connection manager
-    let manager = ConnectionManager::new(config);
+//     // Create connection manager
+//     let manager = ConnectionManager::new(config);
 
-    // Build the pool with configuration
-    let pool = Pool::builder()
-        .max_size(10)
-        .min_idle(Some(2))
-        .build(manager)
-        .await?;
+//     // Build the pool with configuration
+//     let pool = Pool::builder()
+//         .max_size(10)
+//         .min_idle(Some(2))
+//         .build(manager)
+//         .await?;
 
-    // Test connection
-    let conn = pool.get().await?;
-    tracing::info!("✅ Test connection successful!");
-    drop(conn);
+//     // Test connection
+//     let conn = pool.get().await?;
+//     tracing::info!("✅ Test connection successful!");
+//     drop(conn);
 
-    Ok(pool)
-}
+//     Ok(pool)
+// }
 
 // Root endpoint
 async fn root() -> &'static str {
@@ -616,6 +642,7 @@ async fn test_db_connection(State(state): State<Arc<AppState>>) -> impl IntoResp
 struct BatchRequest {
     tag_ids: Vec<String>,
     pub bin_location: Option<String>,
+    pub warehouse: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -624,6 +651,7 @@ struct BasketData {
     basket_vendor: Option<String>,
     basket_purchase_order: Option<String>,
     status: Option<String>,
+    bin: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -641,7 +669,7 @@ async fn handle_batch_baskets(
     let start = std::time::Instant::now();
     let count = payload.tag_ids.len();
 
-    tracing::info!("📥 Received batch of {} tags", count);
+    tracing::info!("📥 Received batch of {} tags, with warehouse: {:?}, bin: {:?}", count, payload.warehouse, payload.bin_location);
 
     if count == 0 {
         return (
@@ -675,18 +703,36 @@ async fn handle_batch_baskets(
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
+    
+    // Build bin condition if warehouse is provided
+    // let bin_condition = if let Some(warehouse) = &payload.warehouse {
+    //     let opposite = match warehouse.as_str() {
+    //         "GD" => "LK",
+    //         "LK" => "GD",
+    //         _ => "",
+    //     };
+    //     if !opposite.is_empty() {
+    //         format!("AND bin <> '{}'", opposite)
+    //     } else {
+    //         String::new()
+    //     }
+    // } else {
+    //     String::new()
+    // };
 
-    // Query matching the provided Django model: wh_former.models.Basket_master_data
-    // Table name assumed based on standard Django naming or user input: wh_former_basket_master_data
+    // Simple query with condition string
     let query = format!(
         r#"
         SELECT 
-            basket_no,
-            basket_vendor,
-            basket_purchase_order,
-            is_active
-        FROM {db}.[wh_former_basket_master_data]
-        WHERE basket_no IN ({in_clause})
+            bmd.basket_no,
+            bmd.basket_vendor,
+            bmd.basket_purchase_order,
+            bmd.is_active,
+            bd.bin
+        FROM {db}.[wh_former_basket_master_data] bmd
+        JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
+        WHERE bmd.basket_no IN ({in_clause})
+        
         "#
     );
 
@@ -723,6 +769,7 @@ async fn handle_batch_baskets(
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
+                        bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
                     };
                     data.push(basket);
                 }
@@ -1237,6 +1284,7 @@ async fn handle_get_machines(State(state): State<Arc<AppState>>) -> impl IntoRes
             ,[area_name]
         FROM {db}.[warehouse_area]
         WHERE warehouse_id LIKE '%MACH%'
+        AND area_name NOT IN ('GD', 'CLEAN')
         ORDER BY area_name
     "#
     );
@@ -2372,8 +2420,8 @@ async fn handle_stockout_save(
                 stockout_from = @P11,
                 batch_no = @P9,
                 former_size = @P10,
-                stockout_total_basket = @P1,
-                stockout_total_former = @P2,
+                stockout_total_basket = stockout_total_basket + @P1,
+                stockout_total_former = stockout_total_former + @P2,
                 most_batch_former_qty = @P3,
                 most_batch_used_day = @P4
             WHERE stockout_form = @P5
@@ -2671,429 +2719,702 @@ async fn handle_stockout_save(
         )
         .await;
 
-    // ==================== TO_LK TRANSIT SECTION ====================
-    if payload.action == "toLK" {
-        tracing::info!("🚚 action=to_lk: starting LK transit sync...");
+    // ==================== GENERAL TRANSIT SECTION ====================
+    let is_transit = payload.action == "toLK" || payload.action == "toGD";
 
-        match &state.lk_pool {
-            None => {
-                tracing::error!("❌ LK pool not configured — skipping LK transit");
+    if is_transit {
+        let to_lk = payload.action == "toLK";
+
+        tracing::info!(
+            "🚚 Transit action={}: starting cross-factory sync...",
+            payload.action
+        );
+
+        // Resolve which pool is source and which is destination.
+        // We work with raw references: for GD we reuse `conn` and `db`;
+        // for LK we need the optional lk_pool / lk_db_prefix.
+        let (lk_pool_ref, lk_db_ref) = match (&state.lk_pool, &state.lk_db_prefix) {
+            (Some(pool), Some(db_prefix)) => (pool, db_prefix.clone()),
+            _ => {
+                tracing::error!("❌ LK pool/db_prefix not configured — skipping transit sync");
+                return (
+                    StatusCode::OK,
+                    Json(StockOutSaveResponse {
+                        success: true,
+                        message: "Stock Out saved, but transit sync skipped: LK not configured"
+                            .to_string(),
+                        total_baskets: Some(total_baskets),
+                        total_formers: Some(total_formers),
+                        batch_no: Some(batch_no),
+                    }),
+                );
             }
-            Some(lk_pool) => {
-                let mut lk_conn = match lk_pool.get().await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("❌ LK DB connection error: {}", e);
-                        // Main flow already succeeded; return success but flag the LK error
-                        return (
-                            StatusCode::OK,
-                            Json(StockOutSaveResponse {
-                                success: true,
-                                message: format!(
-                                    "Stock Out saved, but LK sync failed (connection): {}",
-                                    e
-                                ),
-                                total_baskets: Some(total_baskets),
-                                total_formers: Some(total_formers),
-                                batch_no: Some(batch_no),
-                            }),
-                        );
-                    }
-                };
+        };
 
-                let lk_db = match &state.lk_db_prefix {
-                    Some(p) => p.clone(),
-                    None => {
-                        tracing::error!("❌ lk_db_prefix not configured — skipping LK transit");
-                        return (
-                            StatusCode::OK,
-                            Json(StockOutSaveResponse {
-                                success: true,
-                                message: "Stock Out saved, but LK db prefix not configured"
-                                    .to_string(),
-                                total_baskets: Some(total_baskets),
-                                total_formers: Some(total_formers),
-                                batch_no: Some(batch_no),
-                            }),
-                        );
-                    }
-                };
+        let mut lk_conn = match lk_pool_ref.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ LK DB connection error: {}", e);
+                return (
+                    StatusCode::OK,
+                    Json(StockOutSaveResponse {
+                        success: true,
+                        message: format!(
+                            "Stock Out saved, but transit sync failed (connection): {}",
+                            e
+                        ),
+                        total_baskets: Some(total_baskets),
+                        total_formers: Some(total_formers),
+                        batch_no: Some(batch_no),
+                    }),
+                );
+            }
+        };
 
-                // --- LK Step 1: Upsert batch_data into LK (increment in_wh counts) ---
-                // Pull batch fields from GD first
-                let query_get_batch = format!(
-                    r#"
-                    SELECT group_batch, former_receive_form, former_size, former_vendor,
-                        former_type, former_purchase_order, former_surface, former_length,
-                        former_used_day, former_item_no, former_aql, is_active,
-                        batch_data_date, batch_last_stockout,
+        // Convenience aliases so the symmetric code below reads cleanly.
+        // src_*  = the factory that owns the stock right now (sending side).
+        // dst_*  = the factory that will receive the stock.
+        // For toLK: src = GD (conn / db), dst = LK (lk_conn / lk_db).
+        // For toGD: src = LK (lk_conn / lk_db), dst = GD (conn / db).
+        let (src_db, dst_db) = if to_lk {
+            (db.clone(), lk_db_ref.clone())
+        } else {
+            (lk_db_ref.clone(), db.clone())
+        };
+
+        // basket_active_code while "in transit / on loan"
+        //   is_active = 4 at destination  (basket arrived, in transit state)
+        //   is_active = 5 at source       (basket lent out)
+        let dst_active: i32 = 4;
+        let src_active: i32 = 5;
+
+        // action log label used in batch_data_log
+        let transit_log_action = if to_lk { "TO_LK" } else { "TO_GD" };
+
+        // ── Step 1: Fetch batch info from the SOURCE db ──────────────────
+        let query_get_batch = format!(
+            r#"
+            SELECT group_batch, former_receive_form, former_size, former_vendor,
+                former_type, former_purchase_order, former_surface, former_length,
+                former_used_day, former_item_no, former_aql, is_active,
+                batch_data_date,
+                batch_total_basket, batch_total_basket_in_wh,
+                batch_total_former,  batch_total_former_in_wh,
+                create_at
+            FROM {src_db}.[wh_former_former_batch_data]
+            WHERE batch_no = @P1
+            "#
+        );
+
+        // We always fetch from GD first (it is the master record).
+        // If action is toGD the batch row already lives in GD (conn).
+        let batch_rows = match conn.query(&query_get_batch, &[&batch_no]).await {
+            Ok(s) => s.into_first_result().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::error!("❌ Failed to fetch batch {} from source: {}", batch_no, e);
+                vec![]
+            }
+        };
+
+        if let Some(brow) = batch_rows.first() {
+            // ── Extract batch fields ──────────────────────────────────────
+            let group_batch = brow.get::<&str, _>("group_batch").unwrap_or("").to_string();
+            let former_receive_form = brow
+                .get::<&str, _>("former_receive_form")
+                .unwrap_or("")
+                .to_string();
+            let former_size_b = brow.get::<&str, _>("former_size").unwrap_or("").to_string();
+            let former_vendor = brow
+                .get::<&str, _>("former_vendor")
+                .unwrap_or("")
+                .to_string();
+            let former_type = brow.get::<&str, _>("former_type").unwrap_or("").to_string();
+            let former_purchase_order = brow
+                .get::<&str, _>("former_purchase_order")
+                .unwrap_or("")
+                .to_string();
+            let former_surface = brow
+                .get::<&str, _>("former_surface")
+                .unwrap_or("")
+                .to_string();
+            let former_length = brow
+                .try_get::<f64, _>("former_length")
+                .ok()
+                .flatten()
+                .unwrap_or(0.0);
+            let former_used_day_b = brow
+                .try_get::<i32, _>("former_used_day")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let former_item_no = brow
+                .get::<&str, _>("former_item_no")
+                .unwrap_or("")
+                .to_string();
+            let former_aql = brow
+                .try_get::<f64, _>("former_aql")
+                .ok()
+                .flatten()
+                .unwrap_or(0.0);
+            let is_active_b = brow
+                .try_get::<i32, _>("is_active")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let batch_data_date: Option<chrono::NaiveDate> =
+                brow.try_get("batch_data_date").ok().flatten();
+            let batch_total_basket = brow
+                .try_get::<i32, _>("batch_total_basket")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let batch_total_former = brow
+                .try_get::<i32, _>("batch_total_former")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+
+            // ── Step 2: MERGE batch into DESTINATION db ───────────────────
+            // On MATCH we increment the in_wh counters (stock arriving).
+            // On NOT MATCHED we insert with the full batch master data.
+            let query_dst_batch = format!(
+                r#"
+                MERGE {dst_db}.[wh_former_former_batch_data] AS target
+                USING (SELECT @P1 AS batch_no) AS source
+                ON (target.batch_no = source.batch_no)
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        group_batch           = @P2,
+                        former_receive_form   = @P3,
+                        former_size           = @P4,
+                        former_vendor         = @P5,
+                        former_type           = @P6,
+                        former_purchase_order = @P7,
+                        former_surface        = @P8,
+                        former_length         = @P9,
+                        former_used_day       = @P10,
+                        former_item_no        = @P11,
+                        former_aql            = @P12,
+                        is_active             = @P13,
+                        batch_data_date       = @P14,
+                        batch_total_basket    = @P15,
+                        batch_total_basket_in_wh  = batch_total_basket_in_wh + @P16,
+                        batch_total_former    = @P17,
+                        batch_total_former_in_wh  = batch_total_former_in_wh + @P18,
+                        update_by_id = 33,
+                        update_at    = GETDATE()
+                WHEN NOT MATCHED THEN
+                    INSERT (
+                        batch_no, group_batch, former_receive_form, former_size,
+                        former_vendor, former_type, former_purchase_order, former_surface,
+                        former_length, former_used_day, former_item_no, former_aql,
+                        is_active, batch_data_date,
                         batch_total_basket, batch_total_basket_in_wh,
-                        batch_total_former, batch_total_former_in_wh,
-                        create_at
-                    FROM {db}.[wh_former_former_batch_data]
-                    WHERE batch_no = @P1
+                        batch_total_former,  batch_total_former_in_wh,
+                        create_by_id, create_at, update_by_id, update_at
+                    )
+                    VALUES (
+                        @P1, @P2, @P3, @P4, @P5, @P6, @P7, @P8, @P9, @P10,
+                        @P11, @P12, @P13, @P14,
+                        @P15, @P16, @P17, @P18,
+                        33, GETDATE(), 33, GETDATE()
+                    );
+                "#
+            );
+
+            // For toLK the destination conn is lk_conn; for toGD it is conn.
+            let dst_batch_result = if to_lk {
+                lk_conn
+                    .execute(
+                        &query_dst_batch,
+                        &[
+                            &batch_no,
+                            &group_batch,
+                            &former_receive_form,
+                            &former_size_b,
+                            &former_vendor,
+                            &former_type,
+                            &former_purchase_order,
+                            &former_surface,
+                            &former_length,
+                            &former_used_day_b,
+                            &former_item_no,
+                            &former_aql,
+                            &is_active_b,
+                            &batch_data_date,
+                            &batch_total_basket,
+                            &total_baskets,
+                            &batch_total_former,
+                            &total_formers,
+                        ],
+                    )
+                    .await
+            } else {
+                conn.execute(
+                    &query_dst_batch,
+                    &[
+                        &batch_no,
+                        &group_batch,
+                        &former_receive_form,
+                        &former_size_b,
+                        &former_vendor,
+                        &former_type,
+                        &former_purchase_order,
+                        &former_surface,
+                        &former_length,
+                        &former_used_day_b,
+                        &former_item_no,
+                        &former_aql,
+                        &is_active_b,
+                        &batch_data_date,
+                        &batch_total_basket,
+                        &total_baskets,
+                        &batch_total_former,
+                        &total_formers,
+                    ],
+                )
+                .await
+            };
+
+            match dst_batch_result {
+                Ok(r) => tracing::info!(
+                    "✅ dst batch_data upserted: {} rows, batch={}",
+                    r.total(),
+                    batch_no
+                ),
+                Err(e) => tracing::error!("❌ dst batch_data upsert failed: {}", e),
+            }
+
+            // ── Step 3: batch_data_log on DESTINATION ─────────────────────
+            // If a CRTE log already exists → insert only the directional log.
+            // If not → insert the CRTE log first (batch arriving for the first time).
+            let crte_check_sql = format!(
+                r#"SELECT COUNT(*) as cnt FROM {dst_db}.[wh_former_former_batch_data_log]
+               WHERE batch_no = @P1 AND batch_action_name = 'CRTE'"#
+            );
+
+            let crte_exists: bool = {
+                let stream_result = if to_lk {
+                    lk_conn.query(&crte_check_sql, &[&batch_no]).await
+                } else {
+                    conn.query(&crte_check_sql, &[&batch_no]).await
+                };
+                match stream_result {
+                    Ok(stream) => {
+                        let rows = stream.into_first_result().await.unwrap_or_default();
+                        rows.first()
+                            .and_then(|r| r.get::<i32, _>("cnt"))
+                            .unwrap_or(0)
+                            > 0
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ CRTE check failed: {}", e);
+                        false
+                    }
+                }
+            };
+
+            let sub_action_key = format!("{}{}{}", transit_log_action, batch_no, total_baskets);
+
+            if !crte_exists {
+                // First time this batch arrives at destination — create CRTE entry.
+                let query_dst_crte = format!(
+                    r#"
+                    INSERT INTO {dst_db}.[wh_former_former_batch_data_log]
+                    (batch_no, batch_action_name, batch_sub_action_key,
+                    batch_qty_stockout, batch_qty_stockin, batch_qty_merge, batch_qty_split,
+                    batch_qty_in_wh, batch_qty_total,
+                    batch_basket_qty_stockout, batch_basket_qty_stockin,
+                    batch_basket_qty_merge, batch_basket_qty_split,
+                    batch_basket_qty_in_wh, batch_basket_qty_total,
+                    batch_used_day, batch_change_day, create_at, update_at, is_confirmed)
+                    SELECT
+                        @P1, 'CRTE', '',
+                        0, 0, 0, 0, @P2, batch_total_former,
+                        0, 0, 0, 0, @P3, batch_total_basket,
+                        @P4, GETDATE(), GETDATE(), GETDATE(), 0
+                    FROM {dst_db}.[wh_former_former_batch_data] WHERE batch_no = @P1
                     "#
                 );
-
-                let batch_rows = match conn.query(&query_get_batch, &[&batch_no]).await {
-                    Ok(s) => s.into_first_result().await.unwrap_or_default(),
-                    Err(e) => {
-                        tracing::error!("❌ Failed to fetch batch {} from GD: {}", batch_no, e);
-                        vec![]
-                    }
+                let r = if to_lk {
+                    lk_conn
+                        .execute(
+                            &query_dst_crte,
+                            &[
+                                &batch_no,
+                                &total_formers,
+                                &total_baskets,
+                                &former_used_day_b,
+                            ],
+                        )
+                        .await
+                } else {
+                    conn.execute(
+                        &query_dst_crte,
+                        &[
+                            &batch_no,
+                            &total_formers,
+                            &total_baskets,
+                            &former_used_day_b,
+                        ],
+                    )
+                    .await
                 };
+                match r {
+                    Ok(rows) => tracing::info!("✅ dst CRTE log inserted: {} rows", rows.total()),
+                    Err(e) => tracing::error!("❌ dst CRTE log insert failed: {}", e),
+                }
+            }
 
-                if let Some(brow) = batch_rows.first() {
-                    let group_batch = brow.get::<&str, _>("group_batch").unwrap_or("").to_string();
-                    let former_receive_form = brow
-                        .get::<&str, _>("former_receive_form")
+            // Always insert the directional transit log on destination.
+            let query_dst_transit_log = format!(
+                r#"
+                INSERT INTO {dst_db}.[wh_former_former_batch_data_log]
+                (batch_no, batch_action_name, batch_sub_action_key,
+                batch_qty_stockout, batch_qty_stockin, batch_qty_merge, batch_qty_split,
+                batch_qty_in_wh, batch_qty_total,
+                batch_basket_qty_stockout, batch_basket_qty_stockin,
+                batch_basket_qty_merge, batch_basket_qty_split,
+                batch_basket_qty_in_wh, batch_basket_qty_total,
+                batch_used_day, batch_change_day, create_at, update_at, is_confirmed)
+                SELECT
+                    @P1, @P2, @P3,
+                    0, 0, 0, 0, batch_total_former_in_wh, batch_total_former,
+                    0, 0, 0, 0, batch_total_basket_in_wh, batch_total_basket,
+                    @P4, GETDATE(), GETDATE(), GETDATE(), 0
+                FROM {dst_db}.[wh_former_former_batch_data] WHERE batch_no = @P1
+                "#
+            );
+            let r = if to_lk {
+                lk_conn
+                    .execute(
+                        &query_dst_transit_log,
+                        &[
+                            &batch_no,
+                            &transit_log_action,
+                            &sub_action_key,
+                            &former_used_day_b,
+                        ],
+                    )
+                    .await
+            } else {
+                conn.execute(
+                    &query_dst_transit_log,
+                    &[
+                        &batch_no,
+                        &transit_log_action,
+                        &sub_action_key,
+                        &former_used_day_b,
+                    ],
+                )
+                .await
+            };
+            match r {
+                Ok(rows) => tracing::info!(
+                    "✅ dst {} log inserted: {} rows",
+                    transit_log_action,
+                    rows.total()
+                ),
+                Err(e) => tracing::error!("❌ dst {} log insert failed: {}", transit_log_action, e),
+            }
+
+            // ── Step 4: batch_data_log on SOURCE for tracking ─────────────
+            let query_src_transit_log = format!(
+                r#"
+                INSERT INTO {src_db}.[wh_former_former_batch_data_log]
+                (batch_no, batch_action_name, batch_sub_action_key,
+                batch_qty_stockout, batch_qty_stockin, batch_qty_merge, batch_qty_split,
+                batch_qty_in_wh, batch_qty_total,
+                batch_basket_qty_stockout, batch_basket_qty_stockin,
+                batch_basket_qty_merge, batch_basket_qty_split,
+                batch_basket_qty_in_wh, batch_basket_qty_total,
+                batch_used_day, batch_change_day, batch_stockout_to,
+                create_at, update_at, is_confirmed)
+                SELECT
+                    @P1, @P2, @P3,
+                    0, 0, 0, 0, batch_total_former_in_wh, batch_total_former,
+                    0, 0, 0, 0, batch_total_basket_in_wh, batch_total_basket,
+                    @P4, GETDATE(), @P5,
+                    GETDATE(), GETDATE(), 0
+                FROM {src_db}.[wh_former_former_batch_data] WHERE batch_no = @P1
+                "#
+            );
+            // stockout_to from the perspective of the source
+            let src_stockout_to = if to_lk { "LK" } else { "GD" };
+            let r = conn
+                .execute(
+                    &query_src_transit_log,
+                    &[
+                        &batch_no,
+                        &transit_log_action,
+                        &sub_action_key,
+                        &former_used_day_b,
+                        &src_stockout_to,
+                    ],
+                )
+                .await;
+            match r {
+                Ok(rows) => tracing::info!(
+                    "✅ src {} tracking log inserted: {} rows",
+                    transit_log_action,
+                    rows.total()
+                ),
+                Err(e) => tracing::error!(
+                    "❌ src {} tracking log insert failed: {}",
+                    transit_log_action,
+                    e
+                ),
+            }
+
+            // ── Step 5: Per-basket sync ───────────────────────────────────
+            for rack in &payload.racks {
+                for item in &rack.items {
+                    if !item.basket_no.starts_with("3001")
+                        && !item.basket_no.starts_with("3002")
+                        && !item.basket_no.starts_with("3003")
+                    {
+                        tracing::warn!("⚠️ Skipping invalid basket_no: {}", item.basket_no);
+                        continue;
+                    }
+
+                    // Pull basket master data from GD (always the master record source).
+                    let query_get_basket = format!(
+                        r#"
+                        SELECT basket_vendor, basket_capacity, basket_length,
+                            basket_receive_qty, basket_receive_date, basket_purchase_order,
+                            former_size, former_used_day, is_print
+                        FROM {db}.[wh_former_basket_master_data]
+                        WHERE basket_no = @P1
+                        "#
+                    );
+                    let basket_row = match conn.query(&query_get_basket, &[&item.basket_no]).await {
+                        Ok(s) => s.into_first_result().await.unwrap_or_default(),
+                        Err(e) => {
+                            tracing::error!(
+                                "❌ Failed to fetch basket {} from GD: {}",
+                                item.basket_no,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    let Some(row) = basket_row.first() else {
+                        tracing::warn!(
+                            "⚠️ basket_no={} not found in GD — skipping",
+                            item.basket_no
+                        );
+                        continue;
+                    };
+
+                    let basket_vendor = row
+                        .get::<&str, _>("basket_vendor")
                         .unwrap_or("")
                         .to_string();
-                    let former_size_b =
-                        brow.get::<&str, _>("former_size").unwrap_or("").to_string();
-                    let former_vendor = brow
-                        .get::<&str, _>("former_vendor")
-                        .unwrap_or("")
-                        .to_string();
-                    let former_type = brow.get::<&str, _>("former_type").unwrap_or("").to_string();
-                    let former_purchase_order = brow
-                        .get::<&str, _>("former_purchase_order")
-                        .unwrap_or("")
-                        .to_string();
-                    let former_surface = brow
-                        .get::<&str, _>("former_surface")
-                        .unwrap_or("")
-                        .to_string();
-                    let former_length = brow
-                        .try_get::<f64, _>("former_length")
+                    let basket_capacity = row
+                        .try_get::<i32, _>("basket_capacity")
                         .ok()
                         .flatten()
-                        .unwrap_or(0.0);
-                    let former_used_day_b = brow
+                        .unwrap_or(0);
+                    let basket_length = row
+                        .try_get::<&str, _>("basket_length")
+                        .ok()
+                        .flatten()
+                        .unwrap_or("")
+                        .to_string();
+                    let basket_receive_qty = row
+                        .try_get::<i32, _>("basket_receive_qty")
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0);
+                    let basket_receive_date = row
+                        .try_get::<chrono::NaiveDate, _>("basket_receive_date")
+                        .ok()
+                        .flatten();
+                    let basket_purchase_order = row
+                        .get::<&str, _>("basket_purchase_order")
+                        .unwrap_or("")
+                        .to_string();
+                    let former_size_basket =
+                        row.get::<&str, _>("former_size").unwrap_or("").to_string();
+                    let former_used_day_basket = row
                         .try_get::<i32, _>("former_used_day")
                         .ok()
                         .flatten()
                         .unwrap_or(0);
-                    let former_item_no = brow
-                        .get::<&str, _>("former_item_no")
-                        .unwrap_or("")
-                        .to_string();
-                    let former_aql = brow
-                        .try_get::<f64, _>("former_aql")
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0.0);
-                    let is_active_b = brow
-                        .try_get::<i32, _>("is_active")
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0);
-                    let batch_total_basket = brow
-                        .try_get::<i32, _>("batch_total_basket")
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0);
-                    let batch_total_former = brow
-                        .try_get::<i32, _>("batch_total_former")
+                    let is_print = row
+                        .try_get::<i32, _>("is_print")
                         .ok()
                         .flatten()
                         .unwrap_or(0);
 
-                    let batch_data_date: Option<chrono::NaiveDate> = brow
-                        .try_get::<chrono::NaiveDate, _>("batch_data_date")
-                        .ok()
-                        .flatten();
-
-                    // MERGE batch into LK — increment in_wh quantities
-                    let query_lk_batch = format!(
+                    // MERGE basket into DESTINATION with is_active = dst_active (4 = in transit).
+                    let query_dst_basket = format!(
                         r#"
-                        MERGE {lk_db}.[wh_former_former_batch_data] AS target
-                        USING (SELECT @P1 AS batch_no) AS source
-                        ON (target.batch_no = source.batch_no)
+                        MERGE {dst_db}.[wh_former_basket_master_data] AS target
+                        USING (SELECT @P1 AS basket_no) AS source
+                        ON (target.basket_no = source.basket_no)
                         WHEN MATCHED THEN
                             UPDATE SET
-                                group_batch = @P2,
-                                former_receive_form = @P3,
-                                former_size = @P4,
-                                former_vendor = @P5,
-                                former_type = @P6,
-                                former_purchase_order = @P7,
-                                former_surface = @P8,
-                                former_length = @P9,
-                                former_used_day = @P10,
-                                former_item_no = @P11,
-                                former_aql = @P12,
-                                is_active = @P13,
-                                batch_data_date = @P14,  
-                                batch_total_basket = @P15,
-                                batch_total_basket_in_wh = batch_total_basket_in_wh + @P16,
-                                batch_total_former = @P17,
-                                batch_total_former_in_wh = batch_total_former_in_wh + @P18,
-                                update_by_id = 33,
-                                update_at = GETDATE()
+                                basket_vendor         = @P2,
+                                basket_capacity       = @P3,
+                                basket_length         = @P4,
+                                basket_receive_qty    = @P5,
+                                basket_purchase_order = @P6,
+                                former_size           = @P7,
+                                former_used_day       = @P8,
+                                is_active             = @P9,
+                                is_print              = @P10,
+                                basket_receive_date   = @P11
                         WHEN NOT MATCHED THEN
-                            INSERT (
-                                batch_no, group_batch, former_receive_form, former_size,
-                                former_vendor, former_type, former_purchase_order, former_surface,
-                                former_length, former_used_day, former_item_no, former_aql,
-                                is_active, batch_data_date, 
-                                batch_total_basket, batch_total_basket_in_wh,
-                                batch_total_former, batch_total_former_in_wh,
-                                create_by_id, create_at, update_by_id, update_at
-                            )
-                            VALUES (
-                                @P1, @P2, @P3, @P4, @P5, @P6, @P7, @P8, @P9, @P10,
-                                @P11, @P12, @P13, @P14,  -- @P14 is batch_data_date
-                                @P15, @P16, @P17, @P18,
-                                33, GETDATE(), 33, GETDATE()
-                            );
+                            INSERT (basket_no, basket_vendor, basket_capacity, basket_length,
+                                    basket_receive_qty, basket_purchase_order,
+                                    former_size, former_used_day, is_active, is_print,
+                                    create_by_id, create_at, basket_receive_date)
+                            VALUES (@P1, @P2, @P3, @P4, @P5, @P6, @P7, @P8, @P9, @P10,
+                                    33, GETDATE(), @P11);
                         "#
                     );
-
-                    match lk_conn
-                        .execute(
-                            &query_lk_batch,
+                    let r = if to_lk {
+                        lk_conn
+                            .execute(
+                                &query_dst_basket,
+                                &[
+                                    &item.basket_no,
+                                    &basket_vendor,
+                                    &basket_capacity,
+                                    &basket_length,
+                                    &basket_receive_qty,
+                                    &basket_purchase_order,
+                                    &former_size_basket,
+                                    &former_used_day_basket,
+                                    &dst_active,
+                                    &is_print,
+                                    &basket_receive_date,
+                                ],
+                            )
+                            .await
+                    } else {
+                        conn.execute(
+                            &query_dst_basket,
                             &[
-                                &batch_no,              // P1
-                                &group_batch,           // P2
-                                &former_receive_form,   // P3
-                                &former_size_b,         // P4
-                                &former_vendor,         // P5
-                                &former_type,           // P6
-                                &former_purchase_order, // P7
-                                &former_surface,        // P8
-                                &former_length,         // P9
-                                &former_used_day_b,     // P10
-                                &former_item_no,        // P11
-                                &former_aql,            // P12
-                                &is_active_b,           // P13
-                                &batch_data_date,       // P14
-                                &batch_total_basket,    // P15
-                                &total_baskets,         // P16
-                                &batch_total_former,    // P17
-                                &total_formers,         // P18
+                                &item.basket_no,
+                                &basket_vendor,
+                                &basket_capacity,
+                                &basket_length,
+                                &basket_receive_qty,
+                                &basket_purchase_order,
+                                &former_size_basket,
+                                &former_used_day_basket,
+                                &dst_active,
+                                &is_print,
+                                &basket_receive_date,
                             ],
                         )
                         .await
-                    {
-                        Ok(r) => tracing::info!(
-                            "✅ LK batch_data upserted: {} rows, batch={}",
-                            r.total(),
-                            batch_no,
+                    };
+                    match r {
+                        Ok(rows) => tracing::info!(
+                            "✅ dst basket_master_data upserted: {} rows, basket={}",
+                            rows.total(),
+                            item.basket_no
                         ),
-                        Err(e) => tracing::error!("❌ LK batch_data upsert failed: {}", e),
+                        Err(e) => tracing::error!(
+                            "❌ dst basket_master_data upsert failed for {}: {}",
+                            item.basket_no,
+                            e
+                        ),
                     }
-                } else {
-                    tracing::warn!(
-                        "⚠️ batch_no={} not found in GD — skipping LK batch upsert",
-                        batch_no
+
+                    // MERGE bin_data into DESTINATION.
+                    // Bin value: when arriving at LK → "LK"; when arriving back at GD → use the
+                    // rack's bin field (the physical bin it's returning to).
+                    let dst_bin = if to_lk {
+                        "LK".to_string()
+                    } else {
+                        rack.bin.clone()
+                    };
+                    let query_dst_bin = format!(
+                        r#"
+                        MERGE {dst_db}.[wh_former_former_bin_data] AS target
+                        USING (SELECT @P1 AS basket_no) AS source
+                        ON (target.basket_no = source.basket_no)
+                        WHEN MATCHED THEN
+                            UPDATE SET batch_no = @P2, bin = @P3,
+                                    basket_former_qty = @P4, to_bin_key = '', update_at = GETDATE()
+                        WHEN NOT MATCHED THEN
+                            INSERT (basket_no, batch_no, bin, basket_former_qty, to_bin_key, update_at)
+                            VALUES (@P1, @P2, @P3, @P4, '', GETDATE());
+                        "#
                     );
-                }
-
-                // --- LK Step 2: Upsert each basket into LK with is_active = 4 (In Transit) ---
-                for rack in &payload.racks {
-                    for item in &rack.items {
-                        if !item.basket_no.starts_with("3001")
-                            && !item.basket_no.starts_with("3002")
-                            && !item.basket_no.starts_with("3003")
-                        {
-                            continue;
-                        }
-
-                        // Pull current basket fields from GD so we can replicate them in LK
-                        let query_get_basket = format!(
-                            r#"
-                            SELECT basket_vendor, basket_capacity, basket_length,
-                                   basket_receive_qty, basket_receive_date, basket_purchase_order,
-                                   former_size, former_used_day, is_print, create_at
-                            FROM {db}.[wh_former_basket_master_data]
-                            WHERE basket_no = @P1
-                            "#
-                        );
-                        let basket_row =
-                            match conn.query(&query_get_basket, &[&item.basket_no]).await {
-                                Ok(s) => s.into_first_result().await.unwrap_or_default(),
-                                Err(e) => {
-                                    tracing::error!(
-                                        "❌ Failed to fetch basket {} from GD: {}",
-                                        item.basket_no,
-                                        e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                        if let Some(row) = basket_row.first() {
-                            let basket_vendor = row
-                                .get::<&str, _>("basket_vendor")
-                                .unwrap_or("")
-                                .to_string();
-                            let basket_capacity = row
-                                .try_get::<i32, _>("basket_capacity")
-                                .ok()
-                                .flatten()
-                                .unwrap_or(0);
-                            let basket_length = row
-                                .try_get::<f64, _>("basket_length")
-                                .ok()
-                                .flatten()
-                                .unwrap_or(0.0);
-                            let basket_receive_qty = row
-                                .try_get::<i32, _>("basket_receive_qty")
-                                .ok()
-                                .flatten()
-                                .unwrap_or(0);
-                            let basket_receive_date = row
-                                .try_get::<chrono::NaiveDate, _>("basket_receive_date")
-                                .ok()
-                                .flatten();
-                            let basket_purchase_order = row
-                                .get::<&str, _>("basket_purchase_order")
-                                .unwrap_or("")
-                                .to_string();
-                            let former_size =
-                                row.get::<&str, _>("former_size").unwrap_or("").to_string();
-                            let former_used_day = row
-                                .try_get::<i32, _>("former_used_day")
-                                .ok()
-                                .flatten()
-                                .unwrap_or(0);
-                            let is_print = row
-                                .try_get::<i32, _>("is_print")
-                                .ok()
-                                .flatten()
-                                .unwrap_or(0);
-
-                            // MERGE basket into LK — is_active = 4 (In Transit / Borrowed)
-                            let query_lk_basket = format!(
-                                r#"
-                                MERGE {lk_db}.[wh_former_basket_master_data] AS target
-                                USING (SELECT @P1 AS basket_no) AS source
-                                ON (target.basket_no = source.basket_no)
-                                WHEN MATCHED THEN
-                                    UPDATE SET
-                                        basket_vendor = @P2,
-                                        basket_capacity = @P3,
-                                        basket_length = @P4,
-                                        basket_receive_qty = @P5,
-                                        basket_purchase_order = @P6,
-                                        former_size = @P7,
-                                        former_used_day = @P8,
-                                        is_active = 4,
-                                        is_print = @P9,
-                                        basket_receive_date = @P10
-                                WHEN NOT MATCHED THEN
-                                    INSERT (basket_no, basket_vendor, basket_capacity, basket_length,
-                                            basket_receive_qty, basket_purchase_order,
-                                            former_size, former_used_day, is_active, is_print,
-                                            create_by_id, create_at, basket_receive_date)
-                                    VALUES (@P1, @P2, @P3, @P4, @P5, @P6, @P7, @P8, 4, @P9, 33, GETDATE(), @P10);
-                                "#
-                            );
-
-                            match lk_conn
-                                .execute(
-                                    &query_lk_basket,
-                                    &[
-                                        &item.basket_no,
-                                        &basket_vendor,
-                                        &basket_capacity,
-                                        &basket_length,
-                                        &basket_receive_qty,
-                                        &basket_purchase_order,
-                                        &former_size,
-                                        &former_used_day,
-                                        &is_print,
-                                        &basket_receive_date,
-                                    ],
-                                )
-                                .await
-                            {
-                                Ok(r) => tracing::info!(
-                                    "✅ LK basket_master_data upserted: {} rows, basket={}",
-                                    r.total(),
-                                    item.basket_no
-                                ),
-                                Err(e) => tracing::error!(
-                                    "❌ LK basket_master_data upsert failed for {}: {}",
-                                    item.basket_no,
-                                    e
-                                ),
-                            }
-                        } else {
-                            tracing::warn!(
-                                "⚠️ basket_no={} not found in GD — skipping LK basket upsert",
-                                item.basket_no
-                            );
-                        }
-
-                        // --- LK Step 3: Upsert bin_data into LK with bin = "LK" ---
-                        let query_lk_bin = format!(
-                            r#"
-                            MERGE {lk_db}.[wh_former_former_bin_data] AS target
-                            USING (SELECT @P1 AS basket_no) AS source
-                            ON (target.basket_no = source.basket_no)
-                            WHEN MATCHED THEN
-                                UPDATE SET
-                                    batch_no = @P2,
-                                    bin = 'LK',
-                                    basket_former_qty = @P3,
-                                    to_bin_key = '',
-                                    update_at = GETDATE()
-                            WHEN NOT MATCHED THEN
-                                INSERT (basket_no, batch_no, bin, basket_former_qty, to_bin_key, update_at)
-                                VALUES (@P1, @P2, 'LK', @P3, '', GETDATE());
-                            "#
-                        );
-
-                        match lk_conn
+                    let r = if to_lk {
+                        lk_conn
                             .execute(
-                                &query_lk_bin,
-                                &[&item.basket_no, &batch_no, &item.basket_former_qty],
+                                &query_dst_bin,
+                                &[
+                                    &item.basket_no,
+                                    &batch_no,
+                                    &dst_bin,
+                                    &item.basket_former_qty,
+                                ],
                             )
                             .await
-                        {
-                            Ok(r) => tracing::info!(
-                                "✅ LK bin_data upserted: {} rows, basket={}",
-                                r.total(),
-                                item.basket_no
-                            ),
-                            Err(e) => tracing::error!(
-                                "❌ LK bin_data upsert failed for {}: {}",
-                                item.basket_no,
-                                e
-                            ),
-                        }
+                    } else {
+                        conn.execute(
+                            &query_dst_bin,
+                            &[
+                                &item.basket_no,
+                                &batch_no,
+                                &dst_bin,
+                                &item.basket_former_qty,
+                            ],
+                        )
+                        .await
+                    };
+                    match r {
+                        Ok(rows) => tracing::info!(
+                            "✅ dst bin_data upserted: {} rows, basket={}",
+                            rows.total(),
+                            item.basket_no
+                        ),
+                        Err(e) => tracing::error!(
+                            "❌ dst bin_data upsert failed for {}: {}",
+                            item.basket_no,
+                            e
+                        ),
+                    }
 
-                        // --- GD Step 4: Mark baskets as is_active = 5 (Lending / in use at other factory) ---
-                        let query_gd_lending = format!(
-                            r#"
-                            UPDATE {db}.[wh_former_basket_master_data]
-                            SET is_active = 5
-                            WHERE basket_no = @P1
-                            "#
-                        );
-
-                        match conn.execute(&query_gd_lending, &[&item.basket_no]).await {
-                            Ok(r) => tracing::info!(
-                                "✅ GD basket set to lending (is_active=5): {} rows, basket={}",
-                                r.total(),
-                                item.basket_no
-                            ),
-                            Err(e) => tracing::error!(
-                                "❌ GD basket lending update failed for {}: {}",
-                                item.basket_no,
-                                e
-                            ),
-                        }
+                    // Mark basket as lent-out on SOURCE (is_active = src_active = 5).
+                    let query_src_lending = format!(
+                        r#"
+                    UPDATE {src_db}.[wh_former_basket_master_data]
+                    SET is_active = @P1
+                    WHERE basket_no = @P2
+                    "#
+                    );
+                    let r = conn
+                        .execute(&query_src_lending, &[&src_active, &item.basket_no])
+                        .await;
+                    match r {
+                        Ok(rows) => tracing::info!(
+                            "✅ src basket marked as lending (is_active={}): {} rows, basket={}",
+                            src_active,
+                            rows.total(),
+                            item.basket_no
+                        ),
+                        Err(e) => tracing::error!(
+                            "❌ src basket lending update failed for {}: {}",
+                            item.basket_no,
+                            e
+                        ),
                     }
                 }
-
-                tracing::info!("✅ LK transit sync complete");
             }
+
+            tracing::info!("✅ Transit sync complete (action={})", payload.action);
         }
     }
-    // ==================== END TO_LK TRANSIT SECTION ====================
+    // ==================== END GENERAL TRANSIT SECTION ====================
 
     tracing::info!("✅ Stock Out saved successfully");
     (

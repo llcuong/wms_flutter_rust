@@ -142,6 +142,8 @@ class _ModalDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = _getColors();
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxHeight = screenHeight * 0.7; // Max 70% of screen height
 
     return Dialog(
       shape: RoundedRectangleBorder(
@@ -170,64 +172,109 @@ class _ModalDialog extends StatelessWidget {
           ],
         ),
       )
-          : Container(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: colors['bg'],
-                shape: BoxShape.circle,
+          : ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 400,
+          maxHeight: maxHeight,
+        ),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: colors['bg'],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  colors['icon'] as IconData,
+                  color: colors['color'] as Color,
+                  size: 32,
+                ),
               ),
-              child: Icon(
-                colors['icon'] as IconData,
-                color: colors['color'] as Color,
-                size: 32,
+              const SizedBox(height: 16),
+
+              // Title
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+                textAlign: TextAlign.center,
               ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
+              const SizedBox(height: 8),
+
+              // Scrollable message area with centered text
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Container(
+                    constraints: const BoxConstraints(
+                      minHeight: 0,
+                    ),
+                    child: Text(
+                      message,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textSecondary,
+                      ),
+                      textAlign: TextAlign.center, // Keep text centered
+                    ),
+                  ),
+                ),
               ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              message,
-              style: const TextStyle(
-                fontSize: 14,
-                color: AppColors.textSecondary,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            Row(
-              children: [
-                if (type == ModalType.confirm && cancelText != null)
+              const SizedBox(height: 24),
+
+              // Buttons
+              Row(
+                children: [
+                  if (type == ModalType.confirm && cancelText != null)
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () =>
+                            Navigator.of(context).pop(false),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.slate100,
+                          foregroundColor: AppColors.slate700,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          cancelText!,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (type == ModalType.confirm && cancelText != null)
+                    const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () =>
-                          Navigator.of(context).pop(false),
+                      onPressed: () {
+                        if (onConfirm != null) onConfirm!();
+                        Navigator.of(context).pop(true);
+                      },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.slate100,
-                        foregroundColor: AppColors.slate700,
-                        elevation: 0,
-                        padding:
-                        const EdgeInsets.symmetric(vertical: 14),
+                        backgroundColor: colors['color'] as Color,
+                        foregroundColor: Colors.white,
+                        elevation: 2,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
-                          borderRadius:
-                          BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(12),
                         ),
                       ),
                       child: Text(
-                        cancelText!,
+                        confirmText ?? 'OK',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -235,38 +282,10 @@ class _ModalDialog extends StatelessWidget {
                       ),
                     ),
                   ),
-                if (type == ModalType.confirm && cancelText != null)
-                  const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {
-                      if (onConfirm != null) onConfirm!();
-                      Navigator.of(context).pop(true);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor:
-                      colors['color'] as Color,
-                      foregroundColor: Colors.white,
-                      elevation: 2,
-                      padding:
-                      const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius:
-                        BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: Text(
-                      confirmText ?? 'OK',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

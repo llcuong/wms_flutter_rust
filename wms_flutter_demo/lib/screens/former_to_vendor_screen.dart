@@ -1,3 +1,4 @@
+// screens/vendor_screen.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -11,20 +12,18 @@ import '../components/common/basket_detail_modal.dart';
 import '../components/common/rack_detail_modal.dart';
 import '../components/common/filled_basket_qty_modal.dart';
 import '../components/common/rfid_scanned_items_modal.dart';
-import '../helpers/warehouse_validator.dart';
 import '../services/rfid_scanner.dart';
 import '../services/api_service.dart';
 import '../models/scanned_item.dart';
-import '../widgets/bin_selection_modal.dart';
 
-class FormerCleaningScreen extends StatefulWidget {
-  const FormerCleaningScreen({super.key});
+class FormerToVendorScreen extends StatefulWidget {
+  const FormerToVendorScreen({super.key});
 
   @override
-  State<FormerCleaningScreen> createState() => _FormerCleaningScreenState();
+  State<FormerToVendorScreen> createState() => _FormerToVendorScreenState();
 }
 
-class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
+class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
   final RfidScanner _rfidScanner = RfidScanner();
 
   // Selected source (warehouse or production)
@@ -134,7 +133,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       65 + random.nextInt(26),
     ]);
 
-    final stockForm = 'CL$yy$randomDigits$mm$dd$randomChars';
+    final stockForm = 'VC$yy$randomDigits$mm$dd$randomChars';
 
     setState(() {
       _stockFormController.text = stockForm;
@@ -371,29 +370,8 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
       if (!mounted) return;
 
-      final validBaskets = WarehouseValidator.validateAndFilter(
-        baskets,
-        _warehouseCode,
-        context,
-        originalTagIds: batchIds,
-        onInvalidFound: () {
-          // Stop scanning immediately when invalid tags found
-          _rfidScanner.stopScan();
-          setState(() {
-            isScanning = false;
-            scannerStatus = ScannerStatus.stopped;
-          });
-        },
-      );
-
-      // If invalid baskets found, validBaskets will be empty, so don't process anything
-      if (validBaskets.isEmpty) {
-        _isProcessingBatch = false;
-        return;
-      }
-
       setState(() {
-        for (final basket in validBaskets) {
+        for (final basket in baskets) {
           final tagId = basket.tagId;
           if (_scannedItemsMap.containsKey(tagId)) continue;
 
@@ -447,15 +425,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       }
 
       final basketData = raw.first;
-
-      // Validate single basket
-      if (!WarehouseValidator.isBasketValidForWarehouse(basketData, _warehouseCode)) {
-        final warningMsg = WarehouseValidator.getBasketWarningMessage(basketData, _warehouseCode);
-        if (warningMsg != null) {
-          _showWarning('Warehouse warning', warningMsg);
-        }
-        return;
-      }
 
       setState(() {
         _scannedItemsMap[tagData.tagId] = ScannedItem(
@@ -643,7 +612,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   }
 
   String get _rackCacheKey {
-    return 'cleaning_${_selectedSource?.code ?? 'unknown'}_rack_temp';
+    return 'vendor_${_selectedSource?.code ?? 'unknown'}_rack_temp';
   }
 
   Future<void> _saveRackCache() async {
@@ -702,7 +671,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
           items: _scannedItemsMap.values
               .where((e) => e.status == ItemStatus.success)
               .toList(),
-          bin: 'CLEAN',
+          bin: 'VC',
         ),
       );
       _allRackTagIds.addAll(_scannedItemsMap.keys);
@@ -804,7 +773,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
-            'Former Cleaning',
+            'To Vendor',
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 18,
@@ -825,7 +794,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                   const SizedBox(width: 4),
                   Flexible(
                     child: Text(
-                      _selectedSource!.displayName,
+                      'From ${_selectedSource!.displayName}',
                       style: TextStyle(
                         color: _selectedSource!.color,
                         fontSize: 12,
@@ -891,8 +860,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
-  // ─── Production section (machine + line + stockout form dropdown) ─────────
-
+  // Production Form Section (same as cleaning screen)
   Widget _buildProductionFormSection() {
     return Container(
       decoration: BoxDecoration(
@@ -990,7 +958,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
-  /// Info card for the selected stockout form (fromProduction only).
   Widget _buildStockoutFormInfoCard() {
     if (_isLoadingForms) {
       return const Center(
@@ -1105,22 +1072,13 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
           Row(
             children: [
               Expanded(
-                child: _buildInfoItem(
-                  'Total Basket',
-                  '${form.stockoutTotalBasket}',
-                ),
+                child: _buildInfoItem('Total Basket', '${form.stockoutTotalBasket}'),
               ),
               Expanded(
-                child: _buildInfoItem(
-                  'Total Former',
-                  '${form.stockoutTotalFormer}',
-                ),
+                child: _buildInfoItem('Total Former', '${form.stockoutTotalFormer}'),
               ),
               Expanded(
-                child: _buildInfoItem(
-                  'Returned Basket',
-                  '${form.stockoutReturnBasket}',
-                ),
+                child: _buildInfoItem('Returned Basket', '${form.stockoutReturnBasket}'),
               ),
             ],
           ),
@@ -1128,17 +1086,11 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
           Row(
             children: [
               Expanded(
-                child: _buildInfoItem(
-                  'Returned Former',
-                  '${form.stockoutReturnFormer}',
-                ),
+                child: _buildInfoItem('Returned Former', '${form.stockoutReturnFormer}'),
               ),
               Expanded(
                 flex: 2,
-                child: _buildInfoItem(
-                  'Batch Used Day',
-                  '${form.mostBatchUsedDay}',
-                ),
+                child: _buildInfoItem('Batch Used Day', '${form.mostBatchUsedDay}'),
               ),
             ],
           ),
@@ -1147,69 +1099,63 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
-  // ─── Non-production stock form section ───────────────────────────────────
-
   Widget _buildFormSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_selectedSource?.action != SourceAction.fromProduction) ...[
-          const Padding(
-            padding: EdgeInsets.only(left: 4, bottom: 8),
-            child: Text(
-              'STOCK FORM',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textSecondary,
-                letterSpacing: 1.2,
-              ),
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            'STOCK FORM',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textSecondary,
+              letterSpacing: 1.2,
             ),
           ),
-          Row(
-            children: [
-              Expanded(
-                child: _buildTextFieldWithLabel(
-                  label: '',
-                  controller: _stockFormController,
-                  hintText: 'Auto-generated form...',
-                  showLabel: false,
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: _buildTextFieldWithLabel(
+                label: '',
+                controller: _stockFormController,
+                hintText: 'Auto-generated form...',
+                showLabel: false,
+              ),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 48,
+              height: 48,
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: AppColors.primary.withOpacity(0.4),
+                    width: 1.5,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: IconButton(
+                  onPressed: _generateStockForm,
+                  icon: const Icon(
+                    Icons.refresh,
+                    size: 22,
+                    color: AppColors.primary,
+                  ),
+                  tooltip: 'Regenerate Form',
+                  padding: EdgeInsets.zero,
                 ),
               ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 48,
-                height: 48,
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: AppColors.primary.withOpacity(0.4),
-                      width: 1.5,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: IconButton(
-                    onPressed: _generateStockForm,
-                    icon: const Icon(
-                      Icons.refresh,
-                      size: 22,
-                      color: AppColors.primary,
-                    ),
-                    tooltip: 'Regenerate Form',
-                    padding: EdgeInsets.zero,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ],
     );
   }
 
-  // ─── Shared sub-widgets ──────────────────────────────────────────────────
-
-  /// Generic labeled DropdownButtonFormField.
+  // Shared sub-widgets
   Widget _buildLabeledDropdown<T>({
     required String label,
     required T? value,
@@ -1430,8 +1376,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
-  // ─── Basket mode selector ────────────────────────────────────────────────
-
   Widget _buildBasketModeSelector() {
     Widget buildButton(BasketMode mode, String label) {
       final bool selected = _basketMode == mode;
@@ -1440,7 +1384,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
         child: GestureDetector(
           onTap: () async {
             setState(() => _basketMode = mode);
-
             if (mode == BasketMode.filled) {
               await _rfidScanner.stopScan();
             }
@@ -1490,8 +1433,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       ),
     );
   }
-
-  // ─── Stats cards ─────────────────────────────────────────────────────────
 
   Widget _buildStatsCards() {
     final totalBaskets = _scannedItemsMap.length;
@@ -1635,8 +1576,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       ),
     );
   }
-
-  // ─── RFID Power card ─────────────────────────────────────────────────────
 
   Widget _buildRFIDPowerCard() {
     return Container(
@@ -1914,7 +1853,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
       case ScannerStatus.connected:
         return 'CONNECTED';
       case ScannerStatus.scanning:
-        return 'STARTED';
+        return 'SCANNING...';
       case ScannerStatus.stopped:
         return 'STOPPED';
     }
@@ -1955,37 +1894,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     );
   }
 
-  Future<void> _showBinLocationSelector(ScannedItem item) async {
-    final selectedBinData = await showDialog<BinItem>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => Dialog(
-        child: BinSelectionModal(
-          lastSelected: _lastSelectedArea,
-          incomingQty: _scannedItemsMap.length,
-          rackData: _racks,
-          currentScannedItems: _scannedItemsMap,
-        ),
-      ),
-    );
-
-    if (selectedBinData != null) {
-      setState(() {
-        for (final scannedItem in _scannedItemsMap.values) {
-          scannedItem.bin = selectedBinData.binId;
-        }
-      });
-
-      AppModal.showSuccess(
-        context: context,
-        title: 'Bin Updated',
-        message: 'Bin location set to ${selectedBinData.binId}',
-      );
-    }
-  }
-
-  // ─── Bottom bar ──────────────────────────────────────────────────────────
-
   Widget _buildBottomBar() {
     return Positioned(
       left: 0,
@@ -2003,13 +1911,18 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
               child: ElevatedButton.icon(
                 onPressed: _addCurrentScannedToRack,
                 icon: const Icon(Icons.add, size: 20),
-                label: const Text('Add', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                label: const Text(
+                  'Add',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.slate100,
                   foregroundColor: AppColors.slate700,
                   elevation: 0,
                   padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                 ),
               ),
             ),
@@ -2017,14 +1930,20 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
             Expanded(
               flex: 2,
               child: ElevatedButton.icon(
-                onPressed: _racks.isEmpty ? null : () async {
+                onPressed: _racks.isEmpty
+                    ? null
+                    : () async {
                   AppModal.showLoading(context: context);
 
-                  final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
+                  final totalItems = _racks.fold<int>(
+                    0,
+                        (sum, r) => sum + r.items.length,
+                  );
                   final confirm = await AppModal.showConfirm(
                     context: context,
-                    title: 'Save Stock Out',
-                    message: 'Save ${_racks.length} rack(s) with $totalItems items to database?',
+                    title: 'Save to Vendor',
+                    message:
+                    'Save ${_racks.length} rack(s) with $totalItems items to vendor?',
                   );
 
                   if (confirm != true) {
@@ -2032,23 +1951,30 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                     return;
                   }
 
-                  final apiRacks = _racks.map((rack) => FormerCleaningRackData(
-                    rackNo: rack.rackNo,
-                    bin: rack.bin,
-                    items: rack.items.map((item) {
-                      final bNo = item.basketData?.basketNo;
-                      return FormerCleaningItemData(
-                        tagId: item.id,
-                        basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
-                        basketFormerQty: item.quantity,
-                      );
-                    }).toList(),
-                  )).toList();
+                  final apiRacks = _racks
+                      .map(
+                        (rack) => FormerCleaningRackData(
+                      rackNo: rack.rackNo,
+                      bin: rack.bin,
+                      items: rack.items.map((item) {
+                        final bNo = item.basketData?.basketNo;
+                        return FormerCleaningItemData(
+                          tagId: item.id,
+                          basketNo: (bNo != null && bNo.isNotEmpty)
+                              ? bNo
+                              : item.id,
+                          basketFormerQty: item.quantity,
+                        );
+                      }).toList(),
+                    ),
+                  )
+                      .toList();
 
-                  final response = await ApiServiceFormerCleaning.saveFormerCleaning(
+                  final response =
+                  await ApiServiceFormerCleaning.saveFormerCleaning(
                     stockoutForm: _effectiveStockForm,
-                    action: _selectedSource!.code,
-                    source: "none",
+                    action: 'vendor',
+                    source: _selectedSource!.code,
                     racks: apiRacks,
                   );
 
@@ -2056,22 +1982,24 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
 
                   if (response.success) {
                     _saveRackCache();
+
                     setState(() {
                       _racks.clear();
                       _allRackTagIds.clear();
                       _scannedItemsMap.clear();
                     });
 
+                    if (!mounted) return;
+
                     final fromLocation = _selectedSource!.isFromProduction
                         ? (_selectedMachine?.areaName ?? 'Production')
                         : 'Warehouse';
 
-                    if (!mounted) return;
-
                     AppModal.showSuccess(
                       context: context,
                       title: 'Saved Successfully',
-                      message: 'Former Cleaning saved!\n\nFrom: $fromLocation → To: Cleaning Area\nBaskets: ${response.totalBaskets} | Formers: ${response.totalFormers}',
+                      message:
+                      'Items sent to Vendor!\n\nFrom: $fromLocation\nBaskets: ${response.totalBaskets} | Formers: ${response.totalFormers}',
                     );
                   } else {
                     AppModal.showError(
@@ -2081,15 +2009,20 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
                     );
                   }
                 },
-                icon: const Icon(Icons.save, size: 20),
-                label: const Text('SAVE ALL', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                icon: const Icon(Icons.send, size: 20),
+                label: const Text(
+                  'SEND TO VENDOR',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
+                  backgroundColor: const Color(0xFF8B5CF6),
                   foregroundColor: Colors.white,
                   elevation: 4,
-                  shadowColor: AppColors.primary.withOpacity(0.3),
+                  shadowColor: const Color(0xFF8B5CF6).withOpacity(0.3),
                   padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                   disabledBackgroundColor: AppColors.slate200,
                   disabledForegroundColor: AppColors.slate700,
                 ),
