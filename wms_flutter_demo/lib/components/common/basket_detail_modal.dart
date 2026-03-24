@@ -85,7 +85,7 @@ class BasketDetailModal extends StatelessWidget {
                     _buildDetailRow('Basket No', basketData.basketNo),
                     _buildDetailRow('Vendor', basketData.basketVendor),
                     _buildDetailRow('Capacity', '${basketData.basketCapacity} formers'),
-                    _buildDetailRow('Length', '${basketData.basketLength} cm'),
+                    _buildDetailRow('Length', basketData.basketLength),
                     _buildDetailRow('Receive Date', basketData.basketReceiveDate),
                     _buildDetailRow('Purchase Order', basketData.basketPurchaseOrder),
                     _buildDetailRow('Former Size', basketData.formerSize),

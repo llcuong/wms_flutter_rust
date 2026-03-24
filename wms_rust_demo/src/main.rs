@@ -282,29 +282,18 @@ async fn handle_stockin_batch_baskets(
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
-    
-    // Build bin condition if warehouse is provided
-    // let bin_condition = if let Some(warehouse) = &payload.warehouse {
-    //     let opposite = match warehouse.as_str() {
-    //         "GD" => "LK",
-    //         "LK" => "GD",
-    //         _ => "",
-    //     };
-    //     if !opposite.is_empty() {
-    //         format!("AND fbd.bin <> '{}'", opposite)
-    //     } else {
-    //         String::new()
-    //     }
-    // } else {
-    //     String::new()
-    // };
 
     let query = format!(
         r#"
         SELECT DISTINCT
             bmd.basket_no,
             bmd.basket_vendor,
+            bmd.basket_capacity, 
+            bmd.basket_length,
+            bmd.basket_receive_date,
             bmd.basket_purchase_order,
+            bmd.former_size,
+            bmd.former_used_day,
             bmd.is_active,
             bd.bin
         FROM {db}.[wh_former_basket_master_data] bmd
@@ -352,6 +341,17 @@ async fn handle_stockin_batch_baskets(
                             .unwrap_or_default()
                             .to_string(),
                         basket_vendor: row.get::<&str, _>("basket_vendor").map(|s| s.to_string()),
+                        basket_capacity: row
+                            .get::<i32, _>("basket_capacity")
+                            .map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_receive_date: row
+                            .get::<NaiveDate, _>("basket_receive_date")
+                            .map(|d| d.format("%Y-%m-%d").to_string()),
+                        former_size: row.get::<&str, _>("former_size").map(|s| s.to_string()),
+                        former_used_day: row
+                            .get::<i32, _>("former_used_day")
+                            .map(|v| v.to_string()),
                         basket_purchase_order: row
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
@@ -433,30 +433,16 @@ async fn handle_stockout_batch_baskets(
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
 
-    // Build condition string based on available filters
-    // let bin_condition = if let Some(bin) = &payload.bin_location {
-    //     format!("AND fbd.bin = '{}'", bin)
-    // } else if let Some(warehouse) = &payload.warehouse {
-    //     let opposite = match warehouse.as_str() {
-    //         "GD" => "LK",
-    //         "LK" => "GD",
-    //         _ => "",
-    //     };
-    //     if !opposite.is_empty() {
-    //         format!("AND fbd.bin <> '{}'", opposite)
-    //     } else {
-    //         "AND fbd.bin NOT LIKE '%NBR%'".to_string()
-    //     }
-    // } else {
-    //     "AND fbd.bin NOT LIKE '%NBR%'".to_string()
-    // };
-
-    // Simple query with condition string
     let query = format!(
         r#"
         SELECT DISTINCT
             bmd.basket_no,
             bmd.basket_vendor,
+            bmd.basket_capacity,
+            bmd.basket_length,
+            bmd.basket_receive_date,
+            bmd.former_size,
+            bmd.former_used_day,
             bmd.basket_purchase_order,
             bmd.is_active,
             bd.bin
@@ -504,6 +490,17 @@ async fn handle_stockout_batch_baskets(
                             .unwrap_or_default()
                             .to_string(),
                         basket_vendor: row.get::<&str, _>("basket_vendor").map(|s| s.to_string()),
+                        basket_capacity: row
+                            .get::<i32, _>("basket_capacity")
+                            .map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_receive_date: row
+                            .get::<NaiveDate, _>("basket_receive_date")
+                            .map(|d| d.format("%Y-%m-%d").to_string()),
+                        former_size: row.get::<&str, _>("former_size").map(|s| s.to_string()),
+                        former_used_day: row
+                            .get::<i32, _>("former_used_day")
+                            .map(|v| v.to_string()),
                         basket_purchase_order: row
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
@@ -541,51 +538,6 @@ async fn handle_stockout_batch_baskets(
         }),
     )
 }
-
-/// Create SQL Server connection pool
-// async fn create_db_pool() -> Result<Pool<ConnectionManager>, Box<dyn std::error::Error>> {
-//     // Get database configuration from environment
-//     let host = std::env::var("DATABASE_HOST").unwrap_or_else(|_| "localhost".to_string());
-//     let port: u16 = std::env::var("DATABASE_PORT")
-//         .unwrap_or_else(|_| "1433".to_string())
-//         .parse()?;
-//     let database = std::env::var("DATABASE_NAME").unwrap_or_else(|_| "GDWMS".to_string());
-//     let user = std::env::var("DATABASE_USER").unwrap_or_else(|_| "sa".to_string());
-//     let password = std::env::var("DATABASE_PASSWORD").expect("DATABASE_PASSWORD must be set");
-
-//     tracing::info!(
-//         "📦 Connecting to SQL Server: {}:{}/{}",
-//         host,
-//         port,
-//         database
-//     );
-
-//     // Configure SQL Server connection
-//     let mut config = Config::new();
-//     config.host(&host);
-//     config.port(port);
-//     config.database(&database);
-//     config.authentication(AuthMethod::sql_server(&user, &password));
-//     config.encryption(EncryptionLevel::Off); // Change to Required for production with SSL
-//     config.trust_cert();
-
-//     // Create connection manager
-//     let manager = ConnectionManager::new(config);
-
-//     // Build the pool with configuration
-//     let pool = Pool::builder()
-//         .max_size(10)
-//         .min_idle(Some(2))
-//         .build(manager)
-//         .await?;
-
-//     // Test connection
-//     let conn = pool.get().await?;
-//     tracing::info!("✅ Test connection successful!");
-//     drop(conn);
-
-//     Ok(pool)
-// }
 
 // Root endpoint
 async fn root() -> &'static str {
@@ -649,6 +601,11 @@ struct BatchRequest {
 struct BasketData {
     tag_id: String,
     basket_vendor: Option<String>,
+    basket_capacity: Option<String>,
+    basket_length: Option<String>,
+    basket_receive_date: Option<String>,
+    former_size: Option<String>,
+    former_used_day: Option<String>,
     basket_purchase_order: Option<String>,
     status: Option<String>,
     bin: Option<String>,
@@ -669,7 +626,12 @@ async fn handle_batch_baskets(
     let start = std::time::Instant::now();
     let count = payload.tag_ids.len();
 
-    tracing::info!("📥 Received batch of {} tags, with warehouse: {:?}, bin: {:?}", count, payload.warehouse, payload.bin_location);
+    tracing::info!(
+        "📥 Received batch of {} tags, with warehouse: {:?}, bin: {:?}",
+        count,
+        payload.warehouse,
+        payload.bin_location
+    );
 
     if count == 0 {
         return (
@@ -703,22 +665,6 @@ async fn handle_batch_baskets(
     // Build parameterized query with IN clause
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
-    
-    // Build bin condition if warehouse is provided
-    // let bin_condition = if let Some(warehouse) = &payload.warehouse {
-    //     let opposite = match warehouse.as_str() {
-    //         "GD" => "LK",
-    //         "LK" => "GD",
-    //         _ => "",
-    //     };
-    //     if !opposite.is_empty() {
-    //         format!("AND bin <> '{}'", opposite)
-    //     } else {
-    //         String::new()
-    //     }
-    // } else {
-    //     String::new()
-    // };
 
     // Simple query with condition string
     let query = format!(
@@ -726,6 +672,11 @@ async fn handle_batch_baskets(
         SELECT 
             bmd.basket_no,
             bmd.basket_vendor,
+            bmd.basket_capacity,
+            bmd.basket_length,
+            bmd.basket_receive_date,
+            bmd.former_size,
+            bmd.former_used_day,
             bmd.basket_purchase_order,
             bmd.is_active,
             bd.bin
@@ -765,6 +716,17 @@ async fn handle_batch_baskets(
                             .unwrap_or_default()
                             .to_string(),
                         basket_vendor: row.get::<&str, _>("basket_vendor").map(|s| s.to_string()),
+                        basket_capacity: row
+                            .get::<i32, _>("basket_capacity")
+                            .map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_receive_date: row
+                            .get::<NaiveDate, _>("basket_receive_date")
+                            .map(|d| d.format("%Y-%m-%d").to_string()),
+                        former_size: row.get::<&str, _>("former_size").map(|s| s.to_string()),
+                        former_used_day: row
+                            .get::<i32, _>("former_used_day")
+                            .map(|v| v.to_string()),
                         basket_purchase_order: row
                             .get::<&str, _>("basket_purchase_order")
                             .map(|s| s.to_string()),
@@ -857,7 +819,6 @@ async fn handle_get_parameters(
             None,
         ),
         "vendor" | "brand" => (
-            // Map 'brand' request to 'vendor' query logic if needed, or stick to strict group name
             format!(
                 r#"
             SELECT code, name 
@@ -983,11 +944,6 @@ async fn handle_generate_batch(
 
     let db = &state.db_prefix;
 
-    // 1. Check if item_no exists and get current value
-    // We update atomically by incrementing value and outputting the inserted/updated value
-    // Using simple transaction-like logic or direct update with output
-
-    // T-SQL to update and return the new value atomically
     let query = format!(
         r#"
         UPDATE {db}.[wh_former_parameter_data]
@@ -1003,56 +959,53 @@ async fn handle_generate_batch(
     let result = query_builder.query(&mut *conn).await;
 
     match result {
-        Ok(stream) => {
-            match stream.into_first_result().await {
-                Ok(rows) => {
-                    if let Some(row) = rows.first() {
-                        let new_value: i32 = match row.get::<&str, _>("value") {
-                            Some(v) => v.parse().unwrap_or(0),
-                            None => row.get("value").unwrap_or(0),
-                        };
-                        let batch_no = format!("{}{:04}", item_no, new_value);
+        Ok(stream) => match stream.into_first_result().await {
+            Ok(rows) => {
+                if let Some(row) = rows.first() {
+                    let new_value: i32 = match row.get::<&str, _>("value") {
+                        Some(v) => v.parse().unwrap_or(0),
+                        None => row.get("value").unwrap_or(0),
+                    };
+                    let batch_no = format!("{}{:04}", item_no, new_value);
 
-                        tracing::info!("✅ Generated batch no: {}", batch_no);
+                    tracing::info!("✅ Generated batch no: {}", batch_no);
 
-                        (
-                            StatusCode::OK,
-                            Json(GenerateBatchResponse {
-                                batch_no,
-                                success: true,
-                                message: "Batch generated successfully".to_string(),
-                            }),
-                        )
-                    } else {
-                        // User requested fallback: if not found, assume 1
-                        tracing::warn!(
-                            "⚠️ Item No not found or inactive: {}. Defaulting to 1.",
-                            item_no
-                        );
-                        let batch_no = format!("{}{:04}", item_no, 1);
-                        (
-                            StatusCode::OK,
-                            Json(GenerateBatchResponse {
-                                batch_no,
-                                success: true,
-                                message: "Item No not found, defaulted to 1".to_string(),
-                            }),
-                        )
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("❌ Failed to execute update: {}", e);
                     (
-                        StatusCode::INTERNAL_SERVER_ERROR,
+                        StatusCode::OK,
                         Json(GenerateBatchResponse {
-                            batch_no: "".to_string(),
-                            success: false,
-                            message: format!("Database execution error: {}", e),
+                            batch_no,
+                            success: true,
+                            message: "Batch generated successfully".to_string(),
+                        }),
+                    )
+                } else {
+                    tracing::warn!(
+                        "⚠️ Item No not found or inactive: {}. Defaulting to 1.",
+                        item_no
+                    );
+                    let batch_no = format!("{}{:04}", item_no, 1);
+                    (
+                        StatusCode::OK,
+                        Json(GenerateBatchResponse {
+                            batch_no,
+                            success: true,
+                            message: "Item No not found, defaulted to 1".to_string(),
                         }),
                     )
                 }
             }
-        }
+            Err(e) => {
+                tracing::error!("❌ Failed to execute update: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(GenerateBatchResponse {
+                        batch_no: "".to_string(),
+                        success: false,
+                        message: format!("Database execution error: {}", e),
+                    }),
+                )
+            }
+        },
         Err(e) => {
             tracing::error!("❌ Failed to query: {}", e);
             (
@@ -1289,7 +1242,6 @@ async fn handle_get_machines(State(state): State<Arc<AppState>>) -> impl IntoRes
     "#
     );
 
-    // Fix borrowing issue by executing query and mapping result outside match
     let stream = match conn.simple_query(query).await {
         Ok(s) => s,
         Err(e) => {
@@ -1449,8 +1401,6 @@ async fn handle_get_stockout_forms(
         Ok(rows) => {
             let mut data = Vec::new();
             for row in rows {
-                // Fix: Explicitly handle valid NaiveDate or string
-                // Fix: Explicitly handle valid NaiveDate or string using safe try_get
                 let date_str = row
                     .try_get::<NaiveDate, _>("stockout_date")
                     .ok()
@@ -1524,7 +1474,7 @@ struct MasterInfoData {
     former_surface: String,
     former_length: f32,
     former_purchase_order: i32,
-    former_receive_form: String, // Added
+    former_receive_form: String,
     former_item_no: String,
     former_used_day: i32,
     former_aql: Option<f32>,
@@ -1533,7 +1483,6 @@ struct MasterInfoData {
 
 #[derive(Debug, Deserialize)]
 struct RackData {
-    // rack_no: i32,
     items: Vec<BasketSaveData>,
 }
 
@@ -2730,9 +2679,6 @@ async fn handle_stockout_save(
             payload.action
         );
 
-        // Resolve which pool is source and which is destination.
-        // We work with raw references: for GD we reuse `conn` and `db`;
-        // for LK we need the optional lk_pool / lk_db_prefix.
         let (lk_pool_ref, lk_db_ref) = match (&state.lk_pool, &state.lk_db_prefix) {
             (Some(pool), Some(db_prefix)) => (pool, db_prefix.clone()),
             _ => {
@@ -2771,24 +2717,15 @@ async fn handle_stockout_save(
             }
         };
 
-        // Convenience aliases so the symmetric code below reads cleanly.
-        // src_*  = the factory that owns the stock right now (sending side).
-        // dst_*  = the factory that will receive the stock.
-        // For toLK: src = GD (conn / db), dst = LK (lk_conn / lk_db).
-        // For toGD: src = LK (lk_conn / lk_db), dst = GD (conn / db).
         let (src_db, dst_db) = if to_lk {
             (db.clone(), lk_db_ref.clone())
         } else {
             (lk_db_ref.clone(), db.clone())
         };
 
-        // basket_active_code while "in transit / on loan"
-        //   is_active = 4 at destination  (basket arrived, in transit state)
-        //   is_active = 5 at source       (basket lent out)
         let dst_active: i32 = 4;
         let src_active: i32 = 5;
 
-        // action log label used in batch_data_log
         let transit_log_action = if to_lk { "TO_LK" } else { "TO_GD" };
 
         // ── Step 1: Fetch batch info from the SOURCE db ──────────────────
@@ -2806,8 +2743,6 @@ async fn handle_stockout_save(
             "#
         );
 
-        // We always fetch from GD first (it is the master record).
-        // If action is toGD the batch row already lives in GD (conn).
         let batch_rows = match conn.query(&query_get_batch, &[&batch_no]).await {
             Ok(s) => s.into_first_result().await.unwrap_or_default(),
             Err(e) => {
@@ -2817,7 +2752,6 @@ async fn handle_stockout_save(
         };
 
         if let Some(brow) = batch_rows.first() {
-            // ── Extract batch fields ──────────────────────────────────────
             let group_batch = brow.get::<&str, _>("group_batch").unwrap_or("").to_string();
             let former_receive_form = brow
                 .get::<&str, _>("former_receive_form")
@@ -2875,8 +2809,6 @@ async fn handle_stockout_save(
                 .unwrap_or(0);
 
             // ── Step 2: MERGE batch into DESTINATION db ───────────────────
-            // On MATCH we increment the in_wh counters (stock arriving).
-            // On NOT MATCHED we insert with the full batch master data.
             let query_dst_batch = format!(
                 r#"
                 MERGE {dst_db}.[wh_former_former_batch_data] AS target
@@ -2922,7 +2854,6 @@ async fn handle_stockout_save(
                 "#
             );
 
-            // For toLK the destination conn is lk_conn; for toGD it is conn.
             let dst_batch_result = if to_lk {
                 lk_conn
                     .execute(
@@ -2986,8 +2917,6 @@ async fn handle_stockout_save(
             }
 
             // ── Step 3: batch_data_log on DESTINATION ─────────────────────
-            // If a CRTE log already exists → insert only the directional log.
-            // If not → insert the CRTE log first (batch arriving for the first time).
             let crte_check_sql = format!(
                 r#"SELECT COUNT(*) as cnt FROM {dst_db}.[wh_former_former_batch_data_log]
                WHERE batch_no = @P1 AND batch_action_name = 'CRTE'"#
@@ -3017,7 +2946,6 @@ async fn handle_stockout_save(
             let sub_action_key = format!("{}{}{}", transit_log_action, batch_no, total_baskets);
 
             if !crte_exists {
-                // First time this batch arrives at destination — create CRTE entry.
                 let query_dst_crte = format!(
                     r#"
                     INSERT INTO {dst_db}.[wh_former_former_batch_data_log]
@@ -3066,7 +2994,6 @@ async fn handle_stockout_save(
                 }
             }
 
-            // Always insert the directional transit log on destination.
             let query_dst_transit_log = format!(
                 r#"
                 INSERT INTO {dst_db}.[wh_former_former_batch_data_log]
@@ -3139,7 +3066,6 @@ async fn handle_stockout_save(
                 FROM {src_db}.[wh_former_former_batch_data] WHERE batch_no = @P1
                 "#
             );
-            // stockout_to from the perspective of the source
             let src_stockout_to = if to_lk { "LK" } else { "GD" };
             let r = conn
                 .execute(
@@ -3177,7 +3103,6 @@ async fn handle_stockout_save(
                         continue;
                     }
 
-                    // Pull basket master data from GD (always the master record source).
                     let query_get_basket = format!(
                         r#"
                         SELECT basket_vendor, basket_capacity, basket_length,
@@ -3248,7 +3173,6 @@ async fn handle_stockout_save(
                         .flatten()
                         .unwrap_or(0);
 
-                    // MERGE basket into DESTINATION with is_active = dst_active (4 = in transit).
                     let query_dst_basket = format!(
                         r#"
                         MERGE {dst_db}.[wh_former_basket_master_data] AS target
@@ -3326,9 +3250,6 @@ async fn handle_stockout_save(
                         ),
                     }
 
-                    // MERGE bin_data into DESTINATION.
-                    // Bin value: when arriving at LK → "LK"; when arriving back at GD → use the
-                    // rack's bin field (the physical bin it's returning to).
                     let dst_bin = if to_lk {
                         "LK".to_string()
                     } else {
@@ -3384,7 +3305,6 @@ async fn handle_stockout_save(
                         ),
                     }
 
-                    // Mark basket as lent-out on SOURCE (is_active = src_active = 5).
                     let query_src_lending = format!(
                         r#"
                     UPDATE {src_db}.[wh_former_basket_master_data]
@@ -3510,7 +3430,7 @@ async fn handle_empty_stock_save(
 
     let db = &state.db_prefix;
 
-    // 3. Determine target bin (FIXED TYPE)
+    // 3. Determine target bin
     let target_bin: String = if payload.action.to_lowercase() == "in" {
         "X".to_string()
     } else {
@@ -3522,7 +3442,59 @@ async fn handle_empty_stock_save(
         for item in &rack.items {
             tracing::info!("🔄 Processing basket_no={}", item.basket_no);
 
-            // 4a. Update bin_data
+            // 4a. Fetch batch_no and former_size for this basket (needed for log)
+            let (batch_no_for_log, former_size_for_log) = {
+                let query_fetch = format!(
+                    r#"
+                    SELECT bd.batch_no, b.former_size
+                    FROM {db}.[wh_former_former_bin_data] bd
+                    LEFT JOIN {db}.[wh_former_former_batch_data] b ON b.batch_no = bd.batch_no
+                    WHERE bd.basket_no = @P1
+                    "#
+                );
+                match conn.query(query_fetch, &[&item.basket_no]).await {
+                    Ok(stream) => {
+                        let rows = stream.into_first_result().await.unwrap_or_default();
+                        if let Some(row) = rows.first() {
+                            let bn = row.get::<&str, _>("batch_no").unwrap_or("").to_string();
+                            let fs = row.get::<&str, _>("former_size").unwrap_or("").to_string();
+                            (bn, fs)
+                        } else {
+                            (String::new(), String::new())
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "⚠️ Could not fetch batch/former_size for basket {}: {}",
+                            item.basket_no,
+                            e
+                        );
+                        (String::new(), String::new())
+                    }
+                }
+            };
+
+            // 4b. Capture the current bin before updating (used as from_bin in log)
+            let from_bin_for_log = {
+                let query_current_bin = format!(
+                    r#"
+                    SELECT bin FROM {db}.[wh_former_former_bin_data]
+                    WHERE basket_no = @P1
+                    "#
+                );
+                match conn.query(query_current_bin, &[&item.basket_no]).await {
+                    Ok(stream) => {
+                        let rows = stream.into_first_result().await.unwrap_or_default();
+                        rows.first()
+                            .and_then(|r| r.get::<&str, _>("bin"))
+                            .unwrap_or("")
+                            .to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+
+            // 4c. Update bin_data
             let query_bin = format!(
                 r#"
                 UPDATE {db}.[wh_former_former_bin_data]
@@ -3549,7 +3521,7 @@ async fn handle_empty_stock_save(
                 );
             }
 
-            // 4b. Update basket_master_data
+            // 4d. Update basket_master_data
             let query_master = format!(
                 r#"
                 UPDATE {db}.[wh_former_basket_master_data]
@@ -3569,6 +3541,45 @@ async fn handle_empty_stock_save(
                         total_formers: None,
                     }),
                 );
+            }
+
+            // 4e. Insert bin_data_log
+            // action: 'EMPY' when emptying into storage (action=in → X),
+            //         'EMOUT' when sending to machine (action=out → machine)
+            let log_action = if payload.action.to_lowercase() == "in" {
+                "EMPY"
+            } else {
+                "EMOUT"
+            };
+            let query_bin_log = format!(
+                r#"
+                INSERT INTO {db}.[wh_former_former_bin_data_log]
+                (batch_no, basket_no, from_bin, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
+                VALUES (@P1, @P2, @P3, @P4, @P5, @P6, 'empty_stock', @P7, 28, GETDATE());
+                "#
+            );
+            match conn
+                .execute(
+                    query_bin_log,
+                    &[
+                        &batch_no_for_log,       // P1: batch_no
+                        &item.basket_no,         // P2: basket_no
+                        &from_bin_for_log,       // P3: from_bin (previous bin)
+                        &target_bin,             // P4: to_bin (new bin)
+                        &item.basket_former_qty, // P5: basket_former_qty (qty before emptying)
+                        &log_action,             // P6: action
+                        &former_size_for_log,    // P7: former_size from batch_data
+                    ],
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    "✅ bin_data_log inserted for basket={} ({}→{})",
+                    item.basket_no,
+                    from_bin_for_log,
+                    target_bin
+                ),
+                Err(e) => tracing::error!("❌ bin_data_log insert failed: {}", e),
             }
         }
     }
@@ -3736,16 +3747,18 @@ async fn handle_former_moving_save(
         let new_bin = &rack.bin;
 
         if rack.items.is_empty() {
-            print!("⚠️ No items in rack {}, skipping", rack.rack_no);
+            tracing::info!("⚠️ No items in rack {}, skipping", rack.rack_no);
             continue;
         }
 
         // Get old batch using first basket
         let first_basket = &rack.items[0].basket_no;
 
-        print!(
+        tracing::info!(
             "🔍 Processing rack {}, first_basket={}, new_bin={}",
-            rack.rack_no, first_basket, new_bin
+            rack.rack_no,
+            first_basket,
+            new_bin
         );
 
         let query_old = format!(
@@ -3767,7 +3780,6 @@ async fn handle_former_moving_save(
         let rows: Vec<_> = stream.into_first_result().await.unwrap_or_default();
 
         if rows.is_empty() {
-            // print!("⚠️ No old batch found for basket_no={}, skipping rack {}", first_basket, rack.rack_no);
             continue;
         }
 
@@ -3798,12 +3810,6 @@ async fn handle_former_moving_save(
             rows[0].get::<&str, _>("batch_no").unwrap_or("").to_string()
         };
 
-        // Only process when new_batch exists
-        // if new_batch.is_empty() {
-        //     print!("⚠️ No new batch found for bin={}, skipping rack {}", new_bin, rack.rack_no);
-        //     continue;
-        // }
-
         let basket_qty = rack.items.len() as i32;
         let former_qty: i32 = rack.items.iter().map(|i| i.basket_former_qty).sum();
 
@@ -3813,11 +3819,51 @@ async fn handle_former_moving_save(
         entry.basket_qty += basket_qty;
         entry.former_qty += former_qty;
 
+        // Fetch former_size from batch_data for log
+        let former_size_for_log = {
+            let query_fs = format!(
+                r#"
+                SELECT former_size FROM {db}.[wh_former_former_batch_data]
+                WHERE batch_no = @P1
+                "#
+            );
+            match conn.query(query_fs, &[&old_batch]).await {
+                Ok(stream) => {
+                    let rows = stream.into_first_result().await.unwrap_or_default();
+                    rows.first()
+                        .and_then(|r| r.get::<&str, _>("former_size"))
+                        .unwrap_or("")
+                        .to_string()
+                }
+                Err(_) => String::new(),
+            }
+        };
+
         // =========================
-        // UPDATE BIN
+        // UPDATE BIN & COLLECT LOG DATA
         // =========================
 
         for item in &rack.items {
+            // Fetch the current (from) bin before updating
+            let from_bin = {
+                let query_current_bin = format!(
+                    r#"
+                    SELECT bin FROM {db}.[wh_former_former_bin_data]
+                    WHERE basket_no = @P1
+                    "#
+                );
+                match conn.query(query_current_bin, &[&item.basket_no]).await {
+                    Ok(stream) => {
+                        let rows = stream.into_first_result().await.unwrap_or_default();
+                        rows.first()
+                            .and_then(|r| r.get::<&str, _>("bin"))
+                            .unwrap_or("")
+                            .to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+
             let query_update_bin = format!(
                 r#"
                 UPDATE {db}.[wh_former_former_bin_data]
@@ -3828,14 +3874,50 @@ async fn handle_former_moving_save(
             "#
             );
 
-            print!(
+            tracing::info!(
                 "   Updating bin for basket_no={}, new_bin={}",
-                item.basket_no, new_bin
+                item.basket_no,
+                new_bin
             );
 
             let _ = conn
                 .execute(query_update_bin, &[new_bin, &item.basket_no])
                 .await;
+
+            // Insert bin_data_log immediately after bin update
+            let query_bin_log = format!(
+                r#"
+                INSERT INTO {db}.[wh_former_former_bin_data_log]
+                (batch_no, basket_no, from_bin, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
+                VALUES (@P1, @P2, @P3, @P4, @P5, 'MOVE', 'moving', @P6, 28, GETDATE());
+                "#
+            );
+            match conn
+                .execute(
+                    query_bin_log,
+                    &[
+                        &old_batch,              // P1: batch_no
+                        &item.basket_no,         // P2: basket_no
+                        &from_bin,               // P3: from_bin (captured before update)
+                        new_bin,                 // P4: to_bin
+                        &item.basket_former_qty, // P5: basket_former_qty
+                        &former_size_for_log,    // P6: former_size from batch_data
+                    ],
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    "✅ bin_data_log inserted for moving basket={} ({}→{})",
+                    item.basket_no,
+                    from_bin,
+                    new_bin
+                ),
+                Err(e) => tracing::error!(
+                    "❌ bin_data_log insert failed for basket={}: {}",
+                    item.basket_no,
+                    e
+                ),
+            }
         }
     }
 
@@ -4133,6 +4215,8 @@ async fn handle_former_cleaning_save(
     let mut batch_map: HashMap<String, BatchMove> = HashMap::new();
     let mut batch_baskets: HashMap<String, Vec<String>> = HashMap::new();
     let mut batch_details: HashMap<String, BatchData> = HashMap::new();
+    // Per-item log data keyed by old_batch: Vec<(basket_no, from_bin, qty)>
+    let mut batch_item_details: HashMap<String, Vec<(String, String, i32)>> = HashMap::new();
 
     for rack in &payload.racks {
         if rack.items.is_empty() {
@@ -4220,9 +4304,37 @@ async fn handle_former_cleaning_save(
         entry.basket_qty += basket_qty;
         entry.former_qty += former_qty;
 
-        let basket_vec = batch_baskets.entry(old_batch).or_default();
+        let basket_vec = batch_baskets.entry(old_batch.clone()).or_default();
+        // Per-item details needed for bin_data_log: (basket_no, from_bin, qty)
+        // Stored alongside batch_baskets so we can emit the log in the apply phase
+        // once target_batch (possibly a new sub-batch) is known.
+        let item_details_vec = batch_item_details
+            .entry(old_batch.clone())
+            .or_insert_with(Vec::new);
         for item in &rack.items {
             basket_vec.push(item.basket_no.clone());
+
+            // Fetch current from_bin for each item before the bulk bin update runs
+            let from_bin = {
+                let query_current_bin = format!(
+                    r#"
+                    SELECT bin FROM {db}.[wh_former_former_bin_data]
+                    WHERE basket_no = @P1
+                    "#
+                );
+                match conn.query(query_current_bin, &[&item.basket_no]).await {
+                    Ok(stream) => {
+                        let rows = stream.into_first_result().await.unwrap_or_default();
+                        rows.first()
+                            .and_then(|r| r.get::<&str, _>("bin"))
+                            .unwrap_or("")
+                            .to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+
+            item_details_vec.push((item.basket_no.clone(), from_bin, item.basket_former_qty));
         }
     }
 
@@ -4242,14 +4354,12 @@ async fn handle_former_cleaning_save(
     // APPLY PHASE (PROCESS EACH BATCH ONCE)
     // =====================================
 
-    // Determine flow type based on action AND source
     let is_insert_flow = (payload.action == "warehouse")
         || (payload.action == "vendor" && payload.source == "warehouse");
 
     let is_update_flow = (payload.action == "production")
         || (payload.action == "vendor" && payload.source == "production");
 
-    // Map to stockout action for logging
     let stockout_action = match (payload.action.as_str(), payload.source.as_str()) {
         ("warehouse", "none") => "to_cleaning",
         ("vendor", "warehouse") => "to_vendor",
@@ -4258,13 +4368,22 @@ async fn handle_former_cleaning_save(
         _ => "unknown",
     };
 
-    for (old_batch, data) in batch_map {
-        let baskets = match batch_baskets.get(&old_batch) {
+    // Log action code — computed once, reused per-basket inside the apply loop
+    let log_action = match (payload.action.as_str(), payload.source.as_str()) {
+        ("warehouse", "none") => "CLIN",
+        ("vendor", "warehouse") => "VCLN",
+        ("vendor", "production") => "VCLN",
+        ("production", "none") => "PCLN",
+        _ => "CLIN",
+    };
+
+    for (old_batch, data) in &batch_map {
+        let baskets = match batch_baskets.get(old_batch) {
             Some(v) => v,
             None => continue,
         };
 
-        let batch_detail = match batch_details.get(&old_batch) {
+        let batch_detail = match batch_details.get(old_batch) {
             Some(d) => d,
             None => continue,
         };
@@ -4322,7 +4441,7 @@ async fn handle_former_cleaning_save(
         };
 
         // =====================================
-        // 1. UPDATE ORIGINAL BATCH DATA (for all actions)
+        // 1. UPDATE ORIGINAL BATCH DATA
         // =====================================
         let query_update_batch = if is_update_flow {
             format!(
@@ -4378,7 +4497,7 @@ async fn handle_former_cleaning_save(
         match conn
             .execute(
                 query_update_batch,
-                &[&old_batch, &basket_qty, &former_qty, &is_full_batch],
+                &[old_batch, &basket_qty, &former_qty, &is_full_batch],
             )
             .await
         {
@@ -4397,20 +4516,18 @@ async fn handle_former_cleaning_save(
             }
         }
 
-        // Determine bin target based on action and source
         let bin_target = match (payload.action.as_str(), payload.source.as_str()) {
             ("warehouse", "none") => "CLEAN",
             ("vendor", "warehouse") => "VC",
             ("vendor", "production") => "VC",
             ("production", "none") => "CLEAN",
-            _ => "CLEAN", // fallback
+            _ => "CLEAN",
         };
 
         // =====================================
         // 2. HANDLE BASED ON ACTION/SOURCE COMBINATION
         // =====================================
         if is_insert_flow {
-            // ---------- INSERT NEW STOCKOUT FORM ----------
             let stockout_to = if payload.action == "warehouse" {
                 "CLEAN"
             } else {
@@ -4470,7 +4587,7 @@ async fn handle_former_cleaning_save(
                         &payload.stockout_form,
                         &stockout_action,
                         &stockout_to,
-                        &old_batch,
+                        old_batch,
                         &batch_detail.former_size,
                         &basket_qty,
                         &former_qty,
@@ -4495,7 +4612,6 @@ async fn handle_former_cleaning_save(
                 }
             }
         } else if is_update_flow {
-            // ---------- UPDATE EXISTING STOCKOUT FORM ----------
             let query_update_stockout_form = format!(
                 r#"
                 UPDATE {}.[wh_former_former_stockout_form]
@@ -4552,6 +4668,7 @@ async fn handle_former_cleaning_save(
                 INSERT INTO {}.[wh_former_former_batch_data]
                 (
                     batch_no,
+                    former_size,
                     former_used_day,
                     former_aql,
                     is_active,
@@ -4568,6 +4685,7 @@ async fn handle_former_cleaning_save(
                 )
                 SELECT
                     @new_batch,
+                    former_size,
                     @P4,
                     former_aql,
                     is_active,
@@ -4593,7 +4711,7 @@ async fn handle_former_cleaning_save(
                 .query(
                     query_create_sub_batch,
                     &[
-                        &old_batch,
+                        old_batch,
                         &basket_qty,
                         &former_qty,
                         &batch_detail.former_used_day,
@@ -4676,7 +4794,7 @@ async fn handle_former_cleaning_save(
         }
 
         // =====================================
-        // 4. INSERT BATCH LOG (for all actions)
+        // 4. INSERT BATCH LOG
         // =====================================
         let query_batch_log = format!(
             r#"
@@ -4729,6 +4847,53 @@ async fn handle_former_cleaning_save(
         let _ = conn
             .execute(query_batch_log, &[&target_batch, &former_qty])
             .await;
+
+        // =====================================
+        // 5. INSERT bin_data_log PER BASKET
+        // =====================================
+        let former_size_log = batch_details
+            .get(old_batch)
+            .map(|d| d.former_size.as_str())
+            .unwrap_or("");
+
+        if let Some(item_details) = batch_item_details.get(old_batch) {
+            for (basket_no, from_bin, qty) in item_details {
+                let query_bin_log = format!(
+                    r#"
+                    INSERT INTO {db}.[wh_former_former_bin_data_log]
+                    (batch_no, basket_no, from_bin, to_bin, basket_former_qty, action, action_form, former_size, create_by_id, create_at)
+                    VALUES (@P1, @P2, @P3, @P4, @P5, @P6, 'cleaning', @P7, 28, GETDATE());
+                    "#
+                );
+                match conn
+                    .execute(
+                        query_bin_log,
+                        &[
+                            &target_batch,    // P1: correct batch_no (sub-batch if split)
+                            basket_no,        // P2: basket_no
+                            from_bin,         // P3: from_bin captured before bulk update
+                            &bin_target,      // P4: to_bin (same value used in bin update above)
+                            qty,              // P5: basket_former_qty
+                            &log_action,      // P6: action code
+                            &former_size_log, // P7: former_size from batch_data
+                        ],
+                    )
+                    .await
+                {
+                    Ok(_) => tracing::info!(
+                        "✅ bin_data_log inserted for cleaning basket={} ({}→{})",
+                        basket_no,
+                        from_bin,
+                        bin_target
+                    ),
+                    Err(e) => tracing::error!(
+                        "❌ bin_data_log insert failed for cleaning basket={}: {}",
+                        basket_no,
+                        e
+                    ),
+                }
+            }
+        }
     }
 
     tracing::info!(

@@ -2160,12 +2160,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
                         // ---------- 3. Build API racks payload ----------
                         final apiRacks = _racks.map((rack) {
-                          return StockInRackData(
+                          return StockOutRackData(
                             rackNo: rack.rackNo,
                             bin: rack.bin,
                             items: rack.items.map((item) {
                               final bNo = item.basketData?.basketNo;
-                              return StockInItemData(
+                              return StockOutItemData(
                                 tagId: item.id,
                                 basketNo: (bNo != null && bNo.isNotEmpty)
                                     ? bNo

@@ -1,4 +1,3 @@
-// helpers/warehouse_validator.dart
 import 'package:flutter/material.dart';
 import '../components/common/app_modal.dart';
 import '../services/api_service.dart';
@@ -90,7 +89,7 @@ class WarehouseValidator {
 
     // Only show missing tags warning if no invalid baskets
     if (missingTags.isNotEmpty) {
-      _showMissingTagsWarning(context, missingTags);
+      _showMissingTagsWarningAndStop(context, missingTags, onInvalidFound);
     }
 
     return validBaskets;
@@ -149,7 +148,7 @@ class WarehouseValidator {
   }
 
   /// Show warning for missing tags only
-  static void _showMissingTagsWarning(BuildContext context, List<String> missingTags) {
+  static void _showMissingTagsWarningAndStop(BuildContext context, List<String> missingTags, VoidCallback? onStopScan) {
     final StringBuffer message = StringBuffer();
     message.writeln('Missing data (${missingTags.length}):');
 
@@ -161,6 +160,8 @@ class WarehouseValidator {
     if (missingTags.length > 5) {
       message.writeln('  ... and ${missingTags.length - 5} more');
     }
+
+    onStopScan?.call();
 
     AppModal.showWarning(
       context: context,

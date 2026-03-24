@@ -74,7 +74,8 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
     super.initState();
     _keyboardFocusNode.requestFocus();
     _initializeRfid();
-    _loadMachines();
+    // _loadMachines();
+    _restoreRackCache();
   }
 
   Future<void> _loadMachines() async {
@@ -278,7 +279,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
             id: tagId,
             quantity: quantity,
             vendor: basket.basketVendor,
-            bin: '',  // User must select bin from modal
+            bin: basket.bin,
             status: ItemStatus.success,
             rssi: rssi,
             basketData: basket,
@@ -1992,35 +1993,49 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                 onPressed: _racks.isEmpty
                     ? null
                     : () async {
-                  // Validate: must have current form selected
-
-                  // if (_selectedMachine == null) {
-                  //   AppModal.showWarning(
-                  //     context: context,
-                  //     title: 'Missing Info',
-                  //     message: 'Please select a Machine first',
-                  //   );
-                  //   return;
-                  // }
-
-                  // Check for empty bins
-                  // final emptyBinRacks = _racks.where((r) => r.bin.isEmpty).toList();
-                  // if (emptyBinRacks.isNotEmpty) {
-                  //   AppModal.showWarning(
-                  //     context: context,
-                  //     title: 'Missing Bin',
-                  //     message: 'Rack ${emptyBinRacks.map((r) => r.rackNo).join(", ")} has no bin selected',
-                  //   );
-                  //   return;
-                  // }
-
                   AppModal.showLoading(context: context);
 
                   final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
+
+                  // Generate movement summary for confirmation
+                  final movementGroups = <String, Map<String, dynamic>>{};
+                  for (var rack in _racks) {
+                    for (var item in rack.items) {
+                      final sourceBin = item.basketData?.bin ?? 'Unknown';
+                      final destBin = rack.bin;
+                      final key = '$sourceBin → $destBin';
+
+                      if (!movementGroups.containsKey(key)) {
+                        movementGroups[key] = {
+                          'sourceBin': sourceBin,
+                          'destBin': destBin,
+                          'basketCount': 0,
+                          'formerCount': 0,
+                          'baskets': <String>[],
+                        };
+                      }
+
+                      movementGroups[key]!['basketCount'] = movementGroups[key]!['basketCount'] + 1;
+                      movementGroups[key]!['formerCount'] = movementGroups[key]!['formerCount'] + item.quantity;
+                      (movementGroups[key]!['baskets'] as List<String>).add(item.basketData?.basketNo ?? item.id);
+                    }
+                  }
+
+                  final confirmMessage = StringBuffer();
+                  confirmMessage.writeln('Save ${_racks.length} rack(s) with $totalItems items to database?\n');
+                  confirmMessage.writeln('Movement Summary:');
+                  confirmMessage.writeln('');
+
+                  movementGroups.forEach((key, data) {
+                    confirmMessage.writeln('📦 ${data['sourceBin']} → ${data['destBin']}:');
+                    confirmMessage.writeln('${data['basketCount']} basket(s) | ${data['formerCount']} former(s)');
+                    confirmMessage.writeln('');
+                  });
+
                   final confirm = await AppModal.showConfirm(
                     context: context,
                     title: 'Save Former Moving',
-                    message: 'Save ${_racks.length} rack(s) with $totalItems items to database?',
+                    message: confirmMessage.toString(),
                   );
 
                   if (confirm != true) {
@@ -2036,7 +2051,6 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                       final bNo = item.basketData?.basketNo;
                       return FormerMovingItemData(
                         tagId: item.id,
-                        // Use item.id if basketNo is null or empty
                         basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
                         basketFormerQty: item.quantity,
                       );
@@ -2053,7 +2067,32 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                   if (mounted) AppModal.hideLoading(context);
 
                   if (response.success) {
-                    _saveRackCache();
+                    // Generate detailed success message grouped by movement
+                    final successMessage = StringBuffer();
+                    successMessage.writeln('✅ ${response.totalBaskets} baskets moved successfully!');
+                    successMessage.writeln('📊 Total formers: ${response.totalFormers}');
+                    successMessage.writeln('');
+                    successMessage.writeln('Movement Details:');
+                    successMessage.writeln('');
+
+                    movementGroups.forEach((key, data) {
+                      final sourceBin = data['sourceBin'];
+                      final destBin = data['destBin'];
+                      final basketCount = data['basketCount'];
+                      final formerCount = data['formerCount'];
+                      final baskets = data['baskets'] as List<String>;
+
+                      successMessage.writeln('📦 $sourceBin → $destBin:');
+                      successMessage.writeln('   • $basketCount basket(s), $formerCount former(s)');
+
+                      // Show basket numbers if not too many
+                      // if (basketCount <= 5) {
+                      //   successMessage.writeln('   • Baskets: ${baskets.join(", ")}');
+                      // } else {
+                      //   successMessage.writeln('   • Baskets: ${baskets.take(3).join(", ")} and ${basketCount - 3} more');
+                      // }
+                      // successMessage.writeln('');
+                    });
 
                     setState(() {
                       _racks.clear();
@@ -2061,10 +2100,12 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                       _scannedItemsMap.clear();
                     });
 
+                    _saveRackCache();
+
                     AppModal.showSuccess(
                       context: context,
-                      title: 'Success',
-                      message: 'Former moving save successfully!\n\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+                      title: 'Movement Completed',
+                      message: successMessage.toString(),
                     );
                   } else {
                     AppModal.showError(
@@ -2073,8 +2114,6 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                       message: response.message,
                     );
                   }
-
-
                 },
                 icon: const Icon(Icons.save, size: 20),
                 label: const Text(

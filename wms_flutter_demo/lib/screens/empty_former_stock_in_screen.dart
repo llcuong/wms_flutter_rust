@@ -683,7 +683,7 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
           const SizedBox(width: 2),
           const Expanded(
             child: Text(
-              'Empty Former Stock In',
+              'Empty Basket Stock In',
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
               style: TextStyle(

@@ -128,12 +128,12 @@ class BasketData {
   final String tagId;
   final String basketNo;
   final String basketVendor;
-  final int basketCapacity;
+  final String basketCapacity;
   final String basketLength;
   final String basketReceiveDate;
   final String basketPurchaseOrder;
   final String formerSize;
-  final int formerUsedDay;
+  final String formerUsedDay;
   final String bin;
 
   BasketData({
@@ -158,12 +158,13 @@ class BasketData {
     'basketPurchaseOrder': basketPurchaseOrder,
     'formerSize': formerSize,
     'formerUsedDay': formerUsedDay,
+    'bin': bin,
   };
 
   factory BasketData.fromJson(Map<String, dynamic> json) {
     return BasketData(
       tagId: json['tag_id'] ?? '',
-      basketNo: json['basket_no'] ?? '',
+      basketNo: json['tag_id'] ?? '',
       basketVendor: json['basket_vendor'] ?? '',
       basketCapacity: json['basket_capacity'] ?? 0,
       basketLength: json['basket_length'] ?? '',
@@ -876,7 +877,7 @@ class StockOutSaveResponse {
 class StockOutRackData {
   final int rackNo;
   final String bin;
-  final List<StockInItemData> items;
+  final List<StockOutItemData> items;
 
   StockOutRackData({
     required this.rackNo,
@@ -916,7 +917,7 @@ extension ApiServiceStockOut on ApiService {
     required String selectedMachine,
     required String stockoutFrom,
     required String action,
-    required List<StockInRackData> racks,
+    required List<StockOutRackData> racks,
   }) async {
     try {
       final response = await ApiService.dio.post(

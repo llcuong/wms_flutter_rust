@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../components/common/stock_out_action_modal.dart';
 import '../components/common/warehouse_selection_modal.dart';
 import '../config/constants/app_colors.dart';
 import '../components/common/custom_card.dart';
@@ -29,14 +31,17 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   // Warehouse
   String _warehouseCode = '';
 
-  String selectedForm = 'LN25461127UA';
   double rfidPower = 25.0;
   int selectedPowerLevel = 1;
   bool isScanning = false;
   bool isInitialized = false;
   bool isConnected = false;
   ScannerStatus scannerStatus = ScannerStatus.disconnected;
-  BasketMode _basketMode = BasketMode.empty;
+
+  // Stock Out Action
+  StockOutActionResult? _currentAction;
+  TransitSelection? _transitSelection;
+  bool _hasSelectedAction = false;
 
   // Machine & Line Selection
   List<MachineData> _machines = [];
@@ -44,9 +49,8 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   final List<String> _lines = ['A1', 'A2', 'B1', 'B2'];
   String _selectedLine = 'A1';
 
-  List<StockoutFormData> _machineForms = [];
-  StockoutFormData? _currentForm;
-  bool _isLoadingForms = false;
+  // Stockout Form (for transit)
+  String? _generatedStockForm;
 
   final Map<String, ScannedItem> _scannedItemsMap = {};
   List<ScannedItem> get scannedItems =>
@@ -74,6 +78,70 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     _keyboardFocusNode.requestFocus();
     _initializeRfid();
     _loadMachines();
+
+    // Show action modal after initial setup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showActionModal();
+    });
+  }
+
+  Future<void> _showActionModal() async {
+    final action = await StockOutActionModal.show(context);
+    if (action == null) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+
+    if (action.action == StockOutAction.exit) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _currentAction = action;
+        _hasSelectedAction = true;
+        if (action.isTransit) {
+          _transitSelection = action.transitSelection;
+          // Generate stock form for transit
+          _generateStockFormFallback();
+        } else {
+          _transitSelection = null;
+          _generatedStockForm = null;
+        }
+      });
+      _singleTagCaptured = false;
+    } else if (mounted) {
+      // If user closes the modal without selection, go back
+      Navigator.pop(context);
+    }
+  }
+
+  Future<void> _changeAction() async {
+    // Stop scanning if active
+    if (isScanning) {
+      await _stopScanning();
+    }
+
+    final action = await StockOutActionModal.show(context);
+    if (action != null && mounted) {
+      setState(() {
+        _currentAction = action;
+        if (action.isTransit) {
+          _transitSelection = action.transitSelection;
+          _generateStockFormFallback();
+        } else {
+          _transitSelection = null;
+          _generatedStockForm = null;
+        }
+      });
+      _singleTagCaptured = false;
+
+      AppModal.showSuccess(
+        context: context,
+        title: 'Action Changed',
+        message: 'New action: ${action.displayText}',
+      );
+    }
   }
 
   Future<void> _loadMachines() async {
@@ -85,27 +153,30 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     }
   }
 
-  Future<void> _loadStockoutForms(String machineId) async {
-    setState(() => _isLoadingForms = true);
-    try {
-      // Pass selected line to filter at backend
-      final forms = await ApiService.getStockoutForms(machineId, line: _selectedLine);
-      if (mounted) {
-        setState(() {
-          _machineForms = forms;
-          // Since backend now filters by line, just take the first result or clear
-          if (forms.isNotEmpty) {
-            _currentForm = forms.first;
-          } else {
-            _currentForm = null;
-          }
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoadingForms = false);
-      }
-    }
+  void _generateStockFormFallback() {
+    final now = DateTime.now();
+    final yy = now.year.toString().substring(2);
+    final mm = now.month.toString().padLeft(2, '0');
+    final dd = now.day.toString().padLeft(2, '0');
+
+    String stockForm;
+
+    final prefix = _currentAction?.transitSelection?.to == 'LK'
+        ? 'LK'
+        : 'GD';
+
+    final random = Random();
+    final randomDigits = random.nextInt(100).toString().padLeft(2, '0');
+    final randomChars = String.fromCharCodes([
+      65 + random.nextInt(26),
+      65 + random.nextInt(26),
+    ]);
+
+    stockForm = '$prefix$yy$randomDigits$mm$dd$randomChars';
+
+    setState(() {
+      _generatedStockForm = stockForm;
+    });
   }
 
   @override
@@ -191,7 +262,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   }
 
   void _handleTagScanned(TagData tagData) {
-    if (_basketMode == BasketMode.filled && _singleTagCaptured) return;
+    if (_singleTagCaptured) return;
 
     final tagId = tagData.tagId;
 
@@ -206,11 +277,6 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
     // Already scanned in current session
     if (_scannedItemsMap.containsKey(tagId) || _pendingTags.containsKey(tagId)) {
-      return;
-    }
-
-    if (_basketMode == BasketMode.filled) {
-      _handleSingleFilledScan(tagData);
       return;
     }
 
@@ -233,7 +299,23 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     final batchIds = batchMap.keys.toList();
 
     try {
-      final baskets = await ApiService.getBasketsStockOutBatch(batchIds, binLocation: 'X', warehouse: _warehouseCode);
+      // Determine binLocation based on action type
+      String binLocation = '';
+      if (_currentAction?.isProduction == true) {
+        binLocation = 'X'; // Production uses 'X'
+      } else if (_currentAction?.isTransit == true) {
+        // For transit, use the destination location
+        binLocation = _currentAction?.toLocation ?? '';
+      } else {
+        // For exit or other actions
+        binLocation = 'EXIT';
+      }
+
+      final baskets = await ApiService.getBasketsStockOutBatch(
+          batchIds,
+          binLocation: binLocation,
+          warehouse: _warehouseCode
+      );
 
       if (!mounted) return;
 
@@ -267,11 +349,22 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
           final originalTag = batchMap[tagId];
           final rssi = originalTag?.rssi ?? 0;
 
+          // For production, quantity is always 0 (empty formers)
+          final quantity = _currentAction?.isProduction == true ? 0 : 1;
+
+          // For transit, use transit selection for bin
+          String bin = '';
+          if (_currentAction?.isTransit == true) {
+            bin = _currentAction?.toLocation ?? '';
+          } else if (_currentAction?.isProduction == true) {
+            bin = 'X';
+          }
+
           _scannedItemsMap[tagId] = ScannedItem(
             id: tagId,
-            quantity: 0,
+            quantity: quantity,
             vendor: basket.basketVendor,
-            bin: '',  // User must select bin from modal
+            bin: bin,
             status: ItemStatus.success,
             rssi: rssi,
             basketData: basket,
@@ -280,66 +373,11 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       });
     } catch (e) {
       print('Batch processing error: $e');
-      // Optional: re-queue or handle error items
     } finally {
       _isProcessingBatch = false;
       if (_pendingTags.isNotEmpty) {
         _resetBatchTimer();
       }
-    }
-  }
-
-  Future<void> _handleSingleFilledScan(TagData tagData) async {
-    _singleTagCaptured = true;
-    await _rfidScanner.stopScan();
-
-    setState(() {
-      isScanning = false;
-      scannerStatus = ScannerStatus.connected;
-    });
-
-    final selectedQty = await FilledBasketQtyModal.show(context);
-    if (selectedQty == null) return;
-
-    try {
-      final raw = await ApiService.getBasketsStockInBatch([tagData.tagId]);
-
-      _singleTagCaptured = false;
-
-      if (raw.isEmpty) {
-        _showError('Scanned failed', "No basket data found for tag ${tagData.tagId}");
-        print("No basket data found for tag ${tagData.tagId}");
-        return;
-      }
-
-      final basketData = raw.first;
-
-      // Validate single basket
-      if (!WarehouseValidator.isBasketValidForWarehouse(basketData, _warehouseCode)) {
-        final warningMsg = WarehouseValidator.getBasketWarningMessage(basketData, _warehouseCode);
-        if (warningMsg != null) {
-          _showWarning('Warehouse warning', warningMsg);
-        }
-        return;
-      }
-
-      setState(() {
-        _scannedItemsMap[tagData.tagId] = ScannedItem(
-          id: tagData.tagId,
-          quantity: selectedQty,
-          vendor: basketData.basketVendor,
-          bin: basketData.basketPurchaseOrder,
-          status: ItemStatus.success,
-          rssi: tagData.rssi,
-          basketData: basketData,
-        );
-      });
-
-
-    } catch (e) {
-      // Ignore error tags instead of showing failed status
-      _singleTagCaptured = false;
-      print('Single scan fetch error: $e');
     }
   }
 
@@ -386,10 +424,15 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       return;
     }
 
-    if (_basketMode == BasketMode.filled) {
-      _singleTagCaptured = false;
+    if (!_hasSelectedAction || _currentAction == null) {
+      _showError('No Action Selected', 'Please select an action first');
+      return;
     }
 
+    _startScanningAfterAction();
+  }
+
+  Future<void> _startScanningAfterAction() async {
     try {
       final success = await _rfidScanner.startScan(
         mode: ScanMode.continuous,
@@ -440,6 +483,35 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       } catch (e) {
         _showError('Clear Failed', e.toString());
       }
+    }
+  }
+
+  Future<void> _resetAction() async {
+    final confirm = await AppModal.showConfirm(
+      context: context,
+      title: 'Reset Action',
+      message: 'This will clear all scanned items and current action. Continue?',
+    );
+
+    if (confirm == true) {
+      setState(() {
+        _currentAction = null;
+        _hasSelectedAction = false;
+        _transitSelection = null;
+        _generatedStockForm = null;
+        _scannedItemsMap.clear();
+        _racks.clear();
+        _allRackTagIds.clear();
+      });
+      await _rfidScanner.clearSeenTags();
+      AppModal.showSuccess(
+        context: context,
+        title: 'Reset',
+        message: 'Action reset successfully',
+      );
+
+      // Show action modal again
+      _showActionModal();
     }
   }
 
@@ -531,8 +603,6 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   }
 
   Future<void> _restoreRackCache() async {
-    // if (_selectedMachine == null) return;
-
     setState(() {
       _racks.clear();
       _allRackTagIds.clear();
@@ -571,7 +641,10 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       return;
     }
 
-    if (_selectedMachine?.areaName == null) _showWarning('Missing Machine', 'Please select machine before add scanned items to rack');
+    if (_selectedMachine?.areaName == null) {
+      _showWarning('Missing Machine', 'Please select machine before add scanned items to rack');
+      return;
+    }
 
     final areaName = _selectedMachine!.areaName!;
 
@@ -618,7 +691,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   }
 
   Future<void> _handleExit() async {
-    if (_allRackTagIds.isEmpty) {
+    if (_allRackTagIds.isEmpty && _racks.isEmpty) {
       Navigator.pop(context);
       return;
     }
@@ -637,6 +710,203 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     }
   }
 
+  // Stock Out Save function for transit/exit (similar to stockout screen)
+  Future<void> _stockOutSave() async {
+    if (_currentAction?.toLocation == null) return;
+    if (_selectedMachine == null) {
+      AppModal.showWarning(
+        context: context,
+        title: 'Missing Info',
+        message: 'Please select a Machine first',
+      );
+      return;
+    }
+
+    if (_currentAction == null) return;
+
+    final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
+
+    final confirm = await AppModal.showConfirm(
+      context: context,
+      title: 'Save Stock Out',
+      message: 'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nAction: ${_currentAction!.displayText}\nMachine: ${_selectedMachine!.areaId}',
+    );
+
+    if (confirm != true) return;
+
+    AppModal.showLoading(context: context);
+
+    try {
+      // Convert racks to API format for stock out
+      final apiRacks = _racks.map((rack) => StockOutRackData(
+        rackNo: rack.rackNo,
+        bin: rack.bin,
+        items: rack.items.map((item) {
+          final bNo = item.basketData?.basketNo;
+          return StockOutItemData(
+            tagId: item.id,
+            basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
+            basketFormerQty: item.quantity,
+          );
+        }).toList(),
+      )).toList();
+
+      // Determine stockout_from based on action
+      String stockoutFrom;
+      String actionType;
+
+      if (_currentAction!.isTransit) {
+        stockoutFrom = _currentAction!.fromLocation; // 'GD' or 'LK'
+        actionType = 'transit';
+      } else if (_currentAction!.isExit) {
+        stockoutFrom = _currentAction!.displayText; // 'Exit'
+        actionType = 'exit';
+      } else {
+        // This should not happen as this function is only for transit/exit
+        stockoutFrom = 'Unknown';
+        actionType = 'unknown';
+      }
+
+      // Get former size (you might need to get this from somewhere)
+      // For empty former, you might want to get from the scanned items or use a default
+      String formerSize = 'N/A';
+      if (_scannedItemsMap.isNotEmpty) {
+        // Try to get former size from first scanned item's basket data
+        final firstItem = _scannedItemsMap.values.first;
+        if (firstItem.basketData != null) {
+          // You might need to extract former size from basket data
+          // This depends on your BasketData model structure
+          formerSize = firstItem.basketData!.formerSize ?? 'N/A';
+        }
+      }
+
+      // Call the stock out API with all required parameters
+      final response = await ApiServiceStockOut.saveStockOut(
+        stockoutForm: _generatedStockForm ?? '',
+        formerSize: formerSize,
+        selectedMachine: _currentAction!.toLocation,
+        stockoutFrom: stockoutFrom,
+        action: actionType,
+        racks: apiRacks,
+      );
+
+      if (mounted) AppModal.hideLoading(context);
+
+      if (response.success) {
+        await _saveRackCache();
+
+        setState(() {
+          _racks.clear();
+          _allRackTagIds.clear();
+          _scannedItemsMap.clear();
+        });
+
+        AppModal.showSuccess(
+          context: context,
+          title: 'Success',
+          message: 'Stock Out saved successfully!\n\nAction: ${_currentAction!.displayText}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+        );
+
+        // Reset action after successful save
+        _resetAction();
+      } else {
+        AppModal.showError(
+          context: context,
+          title: 'Save Failed',
+          message: response.message,
+        );
+      }
+    } catch (e) {
+      if (mounted) AppModal.hideLoading(context);
+      AppModal.showError(
+        context: context,
+        title: 'Error',
+        message: 'Failed to save: $e',
+      );
+    }
+  }
+
+  // Save Empty Stock for production
+  Future<void> _saveEmptyStock() async {
+    if (_selectedMachine == null) {
+      AppModal.showWarning(
+        context: context,
+        title: 'Missing Info',
+        message: 'Please select a Machine first',
+      );
+      return;
+    }
+
+    final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
+
+    final confirm = await AppModal.showConfirm(
+      context: context,
+      title: 'Save Stock Out',
+      message: 'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nAction: Production\nMachine: ${_selectedMachine!.areaId}',
+    );
+
+    if (confirm != true) return;
+
+    AppModal.showLoading(context: context);
+
+    try {
+      // Convert racks to API format for empty stock
+      final apiRacks = _racks.map((rack) => EmptyStockRackData(
+        rackNo: rack.rackNo,
+        bin: rack.bin,
+        items: rack.items.map((item) {
+          final bNo = item.basketData?.basketNo;
+          return EmptyStockItemData(
+            tagId: item.id,
+            basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
+            basketFormerQty: item.quantity, // This is 0 for empty formers
+          );
+        }).toList(),
+      )).toList();
+
+      // Call the empty stock API for production
+      final response = await ApiServiceEmptyStock.saveEmptyStock(
+        selectedMachine: _selectedMachine!.areaId,
+        action: 'out',
+        racks: apiRacks,
+      );
+
+      if (mounted) AppModal.hideLoading(context);
+
+      if (response.success) {
+        await _saveRackCache();
+
+        setState(() {
+          _racks.clear();
+          _allRackTagIds.clear();
+          _scannedItemsMap.clear();
+        });
+
+        AppModal.showSuccess(
+          context: context,
+          title: 'Success',
+          message: 'Production Stock Out saved successfully!\n\nMachine: ${_selectedMachine?.areaName}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
+        );
+
+        // Reset action after successful save
+        _resetAction();
+      } else {
+        AppModal.showError(
+          context: context,
+          title: 'Save Failed',
+          message: response.message,
+        );
+      }
+    } catch (e) {
+      if (mounted) AppModal.hideLoading(context);
+      AppModal.showError(
+        context: context,
+        title: 'Error',
+        message: 'Failed to save: $e',
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -652,14 +922,10 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildFormSelector(),
-                  // const SizedBox(height: 24),
-                  // _buildBasketModeSelector(),
                   const SizedBox(height: 24),
                   _buildStatsCards(),
                   const SizedBox(height: 24),
                   _buildRFIDPowerCard(),
-                  // const SizedBox(height: 24),
-                  // _buildScannedItemsList(),
                 ],
               ),
             ),
@@ -672,389 +938,289 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      backgroundColor: Colors.white.withOpacity(0.8),
+      backgroundColor: Colors.white.withOpacity(0.9),
       elevation: 0,
       leading: IconButton(
         icon: const Icon(Icons.chevron_left, color: AppColors.textSecondary),
         onPressed: () => Navigator.pop(context),
       ),
-      title: Row(
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.logout,
-            color: isConnected ? AppColors.success : AppColors.textSecondary,
-          ),
-          const SizedBox(width: 2),
-          const Expanded(
-            child: Text(
-              'Empty Former Stock Out',
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
+          const Text(
+            'Empty Basket Stock Out',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
             ),
           ),
+          if (_currentAction != null)
+            Row(
+              children: [
+                Icon(
+                  _currentAction!.action.icon,
+                  size: 12,
+                  color: _currentAction!.action.color,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  _currentAction!.action.displayName,
+                  style: TextStyle(
+                    color: _currentAction!.action.color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
         ],
       ),
       actions: [
-        IconButton(
-          icon: Icon(
-            isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-            color: isConnected ? AppColors.success : AppColors.error,
+        if (_currentAction != null)
+          Container(
+            margin: const EdgeInsets.only(right: 12),
+            child: Material(
+              color: _currentAction!.action.color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                onTap: _changeAction,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _currentAction!.action.icon,
+                        size: 18,
+                        color: _currentAction!.action.color,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _currentAction!.action.displayName,
+                        style: TextStyle(
+                          color: _currentAction!.action.color,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.keyboard_arrow_down,
+                        size: 16,
+                        color: _currentAction!.action.color,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
-          onPressed: () {
-            if (isConnected) {
-              AppModal.showInfo(
-                context: context,
-                title: 'Connected',
-                message: 'RFID scanner is connected and ready',
-              );
-            } else {
-              _initializeRfid();
-            }
-          },
-        ),
       ],
     );
   }
 
   Widget _buildFormSelector() {
+    // If no action selected yet, don't show anything
+    if (_currentAction == null) return const SizedBox.shrink();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'SELECT MACHINE & LINE',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textSecondary,
-            letterSpacing: 1.2,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            // Machine Selector
-            Expanded(
-              flex: 3,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.slate200),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<MachineData>(
-                    isExpanded: true,
-                    hint: const Text('Select Machine'),
-                    value: _selectedMachine,
-                    items: _machines.map((machine) {
-                      return DropdownMenuItem(
-                        value: machine,
-                        child: Text(
-                          machine.toString(),
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (value) async {
-                      if (value != null) {
-                        setState(() {
-                          _selectedMachine = value;
-                          _machineForms = [];
-                          _currentForm = null;
-                        });
-                        await _restoreRackCache();
-                        // _loadStockoutForms(value.areaId);
-                      }
-                    },
-                  ),
-                ),
-              ),
+        if (_currentAction!.isProduction) ...[
+          const Text(
+            'SELECT MACHINE & LINE',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textSecondary,
+              letterSpacing: 1.2,
             ),
-            const SizedBox(width: 12),
-            // Line Selector
-            Expanded(
-              flex: 2,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.slate200),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: _selectedLine,
-                    items: _lines.map((line) {
-                      return DropdownMenuItem(
-                        value: line,
-                        child: Text(
-                          'Line $line',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          _selectedLine = value;
-                        });
-                        if (_selectedMachine != null) {
-                          _loadStockoutForms(_selectedMachine!.areaId);
-                        }
-                      }
-                    },
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        // _buildFormInfoCard(),
-      ],
-    );
-  }
-
-  Widget _buildFormInfoCard() {
-    if (_isLoadingForms) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(16.0),
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-
-    if (_selectedMachine == null) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.slate50,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.slate200),
-        ),
-        child: const Center(
-          child: Text(
-            'Select a machine to view Stockout Forms',
-            style: TextStyle(color: AppColors.textSecondary),
           ),
-        ),
-      );
-    }
-
-    if (_currentForm == null) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFF1F2),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFFFE4E6)),
-        ),
-        child: Center(
-          child: Text(
-            'No Stockout Form found for Line $_selectedLine',
-            style: const TextStyle(color: Color(0xFFE11D48), fontWeight: FontWeight.bold),
-          ),
-        ),
-      );
-    }
-
-    final form = _currentForm!;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+          const SizedBox(height: 8),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'FORM: ${form.stockoutForm}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    form.stockoutDate ?? 'Unknown Date',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  form.formerSize ?? 'N/A',
-                  style: const TextStyle(
+              // Machine Selector
+              Expanded(
+                flex: 3,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
                     color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.slate200),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<MachineData>(
+                      isExpanded: true,
+                      hint: const Text('Select Machine'),
+                      value: _selectedMachine,
+                      items: _machines.map((machine) {
+                        return DropdownMenuItem(
+                          value: machine,
+                          child: Text(
+                            machine.toString(),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (value) async {
+                        if (value != null) {
+                          setState(() {
+                            _selectedMachine = value;
+                          });
+                          await _restoreRackCache();
+                        }
+                      },
+                    ),
                   ),
                 ),
               ),
-            ],
-          ),
-          const Divider(height: 24),
-          Row(
-            children: [
-              Expanded(
-                child: _buildInfoItem('Total Basket', '${form.stockoutTotalBasket}'),
-              ),
-              Expanded(
-                child: _buildInfoItem('Total Former', '${form.stockoutTotalFormer}'),
-              ),
-              Expanded(
-                child: _buildInfoItem('Returned Basket', '${form.stockoutReturnBasket}'),
-              ),
-
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _buildInfoItem('Returned Former', '${form.stockoutReturnFormer}'),
-              ),
+              const SizedBox(width: 12),
+              // Line Selector
               Expanded(
                 flex: 2,
-                child: _buildInfoItem('Batch Used Day', '${form.mostBatchUsedDay}'),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.slate200),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: _selectedLine,
+                      items: _lines.map((line) {
+                        return DropdownMenuItem(
+                          value: line,
+                          child: Text(
+                            'Line $line',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            _selectedLine = value;
+                          });
+                          // Regenerate form if needed for transit
+                          if (_currentAction?.isTransit == true) {
+                            _generateStockFormFallback();
+                          }
+                        }
+                      },
+                    ),
+                  ),
+                ),
               ),
             ],
-          )
+          ),
+        ] else if (_currentAction!.isTransit) ...[
+          const Text(
+            'STOCK FORM INFORMATION',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textSecondary,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.slate200),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.03),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Form display
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.slate50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.slate200),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.assignment,
+                        size: 20,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'STOCK FORM ID',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textSecondary,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _generatedStockForm!,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          _generateStockFormFallback();
+                          AppModal.showSuccess(
+                            context: context,
+                            title: 'Form Regenerated',
+                            message: 'New stock form ID generated',
+                          );
+                        },
+                        icon: const Icon(Icons.refresh, size: 20),
+                        color: AppColors.primary,
+                        tooltip: 'Regenerate Form',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildInfoItem(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 10,
-            color: AppColors.textSecondary,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: AppColors.textPrimary,
-          ),
-        ),
       ],
     );
   }
-
-  // Widget _buildBasketModeSelector() {
-  //   Widget buildButton(BasketMode mode, String label) {
-  //     final bool selected = _basketMode == mode;
-  //
-  //     return Expanded(
-  //       child: GestureDetector(
-  //         onTap: () async {
-  //           setState(() => _basketMode = mode);
-  //
-  //           if (mode == BasketMode.filled) {
-  //             // switch to single scan mode
-  //             await _rfidScanner.stopScan();
-  //           }
-  //         },
-  //         child: Container(
-  //           padding: const EdgeInsets.symmetric(vertical: 10),
-  //           decoration: BoxDecoration(
-  //             color: selected ? Colors.white : Colors.transparent,
-  //             borderRadius: BorderRadius.circular(16),
-  //             boxShadow: selected
-  //                 ? [
-  //               BoxShadow(
-  //                 color: Colors.black.withOpacity(0.06),
-  //                 blurRadius: 6,
-  //                 offset: const Offset(0, 2),
-  //               )
-  //             ]
-  //                 : null,
-  //           ),
-  //           child: Center(
-  //             child: Text(
-  //               label,
-  //               style: TextStyle(
-  //                 fontSize: 13,
-  //                 fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-  //                 color: selected
-  //                     ? AppColors.primary
-  //                     : AppColors.textSecondary,
-  //               ),
-  //             ),
-  //           ),
-  //         ),
-  //       ),
-  //     );
-  //   }
-  //
-  //   return Container(
-  //     padding: const EdgeInsets.all(6),
-  //     decoration: BoxDecoration(
-  //       color: AppColors.slate100,
-  //       borderRadius: BorderRadius.circular(20),
-  //     ),
-  //     child: Row(
-  //       children: [
-  //         buildButton(BasketMode.full, 'Full basket'),
-  //         buildButton(BasketMode.filled, 'Filled'),
-  //         buildButton(BasketMode.empty, 'Empty'),
-  //       ],
-  //     ),
-  //   );
-  // }
 
   Widget _buildStatsCards() {
     final totalBaskets = _scannedItemsMap.length;
@@ -1068,7 +1234,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             totalBaskets.toString(),
             AppColors.textPrimary,
             false,
-            true, // isClickableForItems
+            true,
           ),
         ),
         const SizedBox(width: 12),
@@ -1078,7 +1244,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             totalFormers.toString(),
             AppColors.primary,
             false,
-            true, // isClickableForItems
+            true,
           ),
         ),
         const SizedBox(width: 12),
@@ -1088,7 +1254,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             _racks.length.toString().padLeft(1, '0'),
             const Color(0xFFE11D48),
             true,
-            false, // Rack modal is separate
+            false,
           ),
         ),
       ],
@@ -1113,7 +1279,6 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             setState(() {
               final rackIndex = _racks.indexWhere((r) => r.rackNo == rackNo);
               if (rackIndex != -1) {
-                // Remove tag IDs of deleted rack from _allRackTagIds
                 for (final item in _racks[rackIndex].items) {
                   _allRackTagIds.remove(item.id);
                 }
@@ -1405,9 +1570,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             ),
             child: Row(
               children: [
-                _buildScanButton(Icons.play_circle, 'START', AppColors.success.withOpacity(0.5), () {
-                  // _startScanning();
-                }),
+                _buildScanButton(Icons.play_circle, 'START', _hasSelectedAction ? AppColors.success.withOpacity(0.5) : AppColors.textTertiary, _startScanning, enabled: _hasSelectedAction),
                 Container(width: 1, height: 64, color: AppColors.slate100),
                 _buildScanButton(Icons.pause_circle, 'STOP', AppColors.textTertiary, _stopScanning),
                 Container(width: 1, height: 64, color: AppColors.slate100),
@@ -1454,25 +1617,25 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     }
   }
 
-  Widget _buildScanButton(IconData icon, String label, Color color, VoidCallback onTap) {
+  Widget _buildScanButton(IconData icon, String label, Color color, VoidCallback onTap, {bool enabled = true}) {
     return Expanded(
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onTap,
+          onTap: enabled ? onTap : null,
           child: SizedBox(
             height: 64,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(icon, color: color, size: 24),
+                Icon(icon, color: enabled ? color : AppColors.textTertiary, size: 24),
                 const SizedBox(height: 4),
                 Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.textSecondary,
+                    color: enabled ? AppColors.textSecondary : AppColors.textTertiary,
                     letterSpacing: 0.8,
                   ),
                 ),
@@ -1483,444 +1646,6 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       ),
     );
   }
-
-  Widget _buildScannedItemsList() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'SCANNED ITEMS (${scannedItems.length})',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textSecondary,
-                  letterSpacing: 1.2,
-                ),
-              ),
-              if (scannedItems.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'LAST SCAN: ${_getLastScanTime()}',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        if (scannedItems.isEmpty)
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.qr_code_scanner,
-                    size: 64,
-                    color: AppColors.textTertiary.withOpacity(0.5),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No items scanned yet',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textTertiary.withOpacity(0.7),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Press START to begin scanning',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.textTertiary.withOpacity(0.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          )
-        else
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: scannedItems.length,
-            itemBuilder: (context, index) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _buildScannedItemCard(scannedItems[index]),
-              );
-            },
-          ),
-      ],
-    );
-  }
-
-  String _getLastScanTime() {
-    return 'JUST NOW';
-  }
-
-  Widget _buildScannedItemCard(ScannedItem item) {
-    Color qtyBgColor;
-    Color qtyTextColor;
-    Color statusBgColor;
-    Color statusTextColor;
-    String statusLabel;
-    Color borderColor;
-
-    switch (item.status) {
-      case ItemStatus.success:
-        qtyBgColor = const Color(0xFFECFDF5);
-        qtyTextColor = const Color(0xFF059669);
-        statusBgColor = const Color(0xFFD1FAE5);
-        statusTextColor = const Color(0xFF047857);
-        statusLabel = 'SUCCESS';
-        borderColor = AppColors.slate100;
-        break;
-
-      case ItemStatus.duplicate:
-        qtyBgColor = const Color(0xFFFEF3C7);
-        qtyTextColor = const Color(0xFFD97706);
-        statusBgColor = const Color(0xFFFDE68A);
-        statusTextColor = const Color(0xFFB45309);
-        statusLabel = 'DUPLICATE';
-        borderColor = AppColors.slate100;
-        break;
-
-      case ItemStatus.pending:
-        qtyBgColor = const Color(0xFFE0E7FF);
-        qtyTextColor = const Color(0xFF4F46E5);
-        statusBgColor = const Color(0xFFDDD6FE);
-        statusTextColor = const Color(0xFF6366F1);
-        statusLabel = 'LOADING...';
-        borderColor = AppColors.slate100;
-        break;
-
-      case ItemStatus.error:
-        qtyBgColor = const Color(0xFFFEE2E2);
-        qtyTextColor = const Color(0xFFDC2626);
-        statusBgColor = const Color(0xFFFECDD3);
-        statusTextColor = const Color(0xFFBE123C);
-        statusLabel = 'ERROR';
-        borderColor = const Color(0xFFFFE4E6);
-        break;
-    }
-
-    return GestureDetector(
-      onTap:
-      item.status == ItemStatus.success ? () => _showItemDetails(item) : null,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: borderColor),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          children: [
-            // Delete button row
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                IconButton(
-                  onPressed: () {
-                    _deleteScannedItem(item.id);
-                  },
-                  icon: const Icon(
-                    Icons.close,
-                    color: Colors.red,
-                    size: 20,
-                  ),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  tooltip: 'Remove item',
-                ),
-              ],
-            ),
-            Row(
-              children: [
-                // QTY box
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: qtyBgColor,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        'QTY',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: qtyTextColor,
-                        ),
-                      ),
-                      Text(
-                        '${item.quantity}',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                          color: qtyTextColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 16),
-
-                // Main content
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              item.id,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.textPrimary,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: statusBgColor,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              statusLabel,
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: statusTextColor,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-
-                      if (item.status == ItemStatus.success &&
-                          item.vendor.isNotEmpty)
-                        Text(
-                          'Vendor: ${item.vendor}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSecondary,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        )
-                      else if (item.status == ItemStatus.error)
-                        Text(
-                          item.errorMessage ?? 'Unknown error',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Color(0xFFDC2626),
-                            fontStyle: FontStyle.italic,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        )
-                      else if (item.status == ItemStatus.pending)
-                          const Text(
-                            'Fetching basket data...',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          )
-                        else if (item.status == ItemStatus.duplicate)
-                            const Text(
-                              'Already scanned',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFFD97706),
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                    ],
-                  ),
-                ),
-
-                if (item.basketData != null) ...[
-                  const SizedBox(width: 8),
-                  const Icon(
-                    Icons.info_outline,
-                    size: 20,
-                    color: AppColors.textTertiary,
-                  ),
-                ],
-              ],
-            ),
-
-            // BIN info
-            if (item.status == ItemStatus.success && item.bin.isNotEmpty)
-              Column(
-                children: [
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.slate50,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.slate200),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.warehouse,
-                          size: 20,
-                          color: AppColors.textSecondary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'BIN LOCATION',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textSecondary,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                item.bin,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () => _showBinLocationSelector(item),
-                          style: TextButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: const Text(
-                            'CHANGE',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              )
-            else if (item.status == ItemStatus.success)
-              Column(
-                children: [
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () => _showBinLocationSelector(item),
-                      icon: const Icon(Icons.warehouse, size: 18),
-                      label: const Text(
-                        'SELECT BIN LOCATION',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showBinLocationSelector(ScannedItem item) async {
-    final selectedBinData = await showDialog<BinItem>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => Dialog(
-        child: BinSelectionModal(
-          lastSelected: _lastSelectedArea,
-          incomingQty: _scannedItemsMap.length,
-          rackData: _racks,
-          currentScannedItems: _scannedItemsMap,
-        ),
-      ),
-    );
-
-    if (selectedBinData != null) {
-      setState(() {
-        for (final scannedItem in _scannedItemsMap.values) {
-          scannedItem.bin = selectedBinData.binId;
-        }
-      });
-
-      AppModal.showSuccess(
-        context: context,
-        title: 'Bin Updated',
-        message: 'Bin location set to ${selectedBinData.binId}',
-      );
-    }
-  }
-
 
   Widget _buildBottomBar() {
     return Positioned(
@@ -1937,7 +1662,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
           children: [
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: _addCurrentScannedToRack,
+                onPressed: _hasSelectedAction ? _addCurrentScannedToRack : null,
                 icon: const Icon(Icons.add, size: 20),
                 label: const Text(
                   'Add',
@@ -1947,8 +1672,8 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
                   ),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.slate100,
-                  foregroundColor: AppColors.slate700,
+                  backgroundColor: _hasSelectedAction ? AppColors.slate100 : AppColors.slate200,
+                  foregroundColor: _hasSelectedAction ? AppColors.slate700 : AppColors.slate300,
                   elevation: 0,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
@@ -1961,93 +1686,15 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
             Expanded(
               flex: 2,
               child: ElevatedButton.icon(
-                onPressed: _racks.isEmpty
-                    ? null
-                    : () async {
-                  // Validate: must have current form selected
-
-                  if (_selectedMachine == null) {
-                    AppModal.showWarning(
-                      context: context,
-                      title: 'Missing Info',
-                      message: 'Please select a Machine first',
-                    );
-                    return;
-                  }
-
-                  // Check for empty bins
-                  // final emptyBinRacks = _racks.where((r) => r.bin.isEmpty).toList();
-                  // if (emptyBinRacks.isNotEmpty) {
-                  //   AppModal.showWarning(
-                  //     context: context,
-                  //     title: 'Missing Bin',
-                  //     message: 'Rack ${emptyBinRacks.map((r) => r.rackNo).join(", ")} has no bin selected',
-                  //   );
-                  //   return;
-                  // }
-
-                  AppModal.showLoading(context: context);
-
-                  final totalItems = _racks.fold<int>(0, (sum, r) => sum + r.items.length);
-                  final confirm = await AppModal.showConfirm(
-                    context: context,
-                    title: 'Save Stock Out',
-                    message: 'Save ${_racks.length} rack(s) with $totalItems items to database?\n\nMachine: ${_selectedMachine!.areaId}',
-                  );
-
-                  if (confirm != true) {
-                    if (mounted) AppModal.hideLoading(context);
-                    return;
-                  }
-
-                  // Convert racks to API format
-                  final apiRacks = _racks.map((rack) => EmptyStockRackData(
-                    rackNo: rack.rackNo,
-                    bin: rack.bin,
-                    items: rack.items.map((item) {
-                      final bNo = item.basketData?.basketNo;
-                      return EmptyStockItemData(
-                        tagId: item.id,
-                        // Use item.id if basketNo is null or empty
-                        basketNo: (bNo != null && bNo.isNotEmpty) ? bNo : item.id,
-                        basketFormerQty: item.quantity,
-                      );
-                    }).toList(),
-                  )).toList();
-
-                  // Call API
-                  final response = await ApiServiceEmptyStock.saveEmptyStock(
-                    selectedMachine: _selectedMachine!.areaId,
-                    action: 'out',
-                    racks: apiRacks,
-                  );
-
-                  if (mounted) AppModal.hideLoading(context);
-
-                  if (response.success) {
-                    _saveRackCache();
-
-                    setState(() {
-                      _racks.clear();
-                      _allRackTagIds.clear();
-                      _scannedItemsMap.clear();
-                    });
-
-                    AppModal.showSuccess(
-                      context: context,
-                      title: 'Success',
-                      message: 'Stock In saved successfully!\n\nLocation: ${_selectedMachine?.areaName}\nBaskets: ${response.totalBaskets}\nFormers: ${response.totalFormers}',
-                    );
+                onPressed: (_racks.isNotEmpty && _hasSelectedAction && _currentAction != null)
+                    ? () async {
+                  if (_currentAction!.isProduction) {
+                    await _saveEmptyStock();
                   } else {
-                    AppModal.showError(
-                      context: context,
-                      title: 'Save Failed',
-                      message: response.message,
-                    );
+                    await _stockOutSave();
                   }
-
-
-                },
+                }
+                    : null,
                 icon: const Icon(Icons.save, size: 20),
                 label: const Text(
                   'SAVE ALL',

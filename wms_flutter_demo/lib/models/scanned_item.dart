@@ -71,6 +71,7 @@ class Rack {
   Map<String, dynamic> toJson() => {
     'rackNo': rackNo,
     'createdAt': createdAt.toIso8601String(),
+    'bin': bin,
     'items': items.map((e) => e.toJson()).toList(),
   };
 
@@ -78,6 +79,7 @@ class Rack {
   factory Rack.fromJson(Map<String, dynamic> json) => Rack(
     rackNo: json['rackNo'],
     createdAt: DateTime.parse(json['createdAt']),
+    bin: json['bin'] ?? '',
     items: (json['items'] as List)
         .map((e) => ScannedItem.fromJson(e))
         .toList(),
