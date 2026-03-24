@@ -3547,9 +3547,9 @@ async fn handle_empty_stock_save(
             // action: 'EMPY' when emptying into storage (action=in → X),
             //         'EMOUT' when sending to machine (action=out → machine)
             let log_action = if payload.action.to_lowercase() == "in" {
-                "EMPY"
+                "EMPTY_IN"
             } else {
-                "EMOUT"
+                "EMPTY_OUT"
             };
             let query_bin_log = format!(
                 r#"
