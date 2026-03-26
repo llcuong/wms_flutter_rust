@@ -344,7 +344,7 @@ async fn handle_stockin_batch_baskets(
                         basket_capacity: row
                             .get::<i32, _>("basket_capacity")
                             .map(|v| v.to_string()),
-                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|s| s.to_string()),
                         basket_receive_date: row
                             .get::<NaiveDate, _>("basket_receive_date")
                             .map(|d| d.format("%Y-%m-%d").to_string()),
@@ -493,7 +493,7 @@ async fn handle_stockout_batch_baskets(
                         basket_capacity: row
                             .get::<i32, _>("basket_capacity")
                             .map(|v| v.to_string()),
-                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|s: &str| s.to_string()),
                         basket_receive_date: row
                             .get::<NaiveDate, _>("basket_receive_date")
                             .map(|d| d.format("%Y-%m-%d").to_string()),
@@ -719,7 +719,7 @@ async fn handle_batch_baskets(
                         basket_capacity: row
                             .get::<i32, _>("basket_capacity")
                             .map(|v| v.to_string()),
-                        basket_length: row.get::<&str, _>("basket_length").map(|v| v.to_string()),
+                        basket_length: row.get::<&str, _>("basket_length").map(|s| s.to_string()),
                         basket_receive_date: row
                             .get::<NaiveDate, _>("basket_receive_date")
                             .map(|d| d.format("%Y-%m-%d").to_string()),

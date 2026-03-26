@@ -1,6 +1,8 @@
 // services/server_config_service.dart
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api_service.dart';
+
 /// Service to manage server configuration (IP and Port) for different warehouses
 class ServerConfigService {
   static const String _keySelectedWarehouse = 'selected_warehouse';
@@ -101,6 +103,10 @@ class ServerConfigService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keySelectedWarehouse, warehouse);
     _cachedSelectedWarehouse = warehouse;
+
+    if (ApiService.isInitialized) {
+      await ApiService.updateBaseUrl();
+    }
   }
 
   /// Save GD server configuration

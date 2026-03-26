@@ -297,6 +297,33 @@ class ApiService {
     }
   }
 
+  static Future<void> updateBaseUrl() async {
+    if (!_initialized) {
+      await init();
+    }
+
+    final newBaseUrl = ServerConfigService.apiBaseUrl;
+
+    // Update the base URL in the existing Dio instance
+    _dio!.options.baseUrl = newBaseUrl;
+
+    print('🔄 ApiService base URL updated to: $newBaseUrl');
+  }
+
+  /// Reset/clear cookies when switching warehouses
+  static Future<void> switchWarehouse(String warehouseCode) async {
+    // Clear existing cookies
+    await _cookieJar?.deleteAll();
+
+    // Set new warehouse cookie
+    await setWarehouse(warehouseCode);
+
+    // Update base URL
+    await updateBaseUrl();
+
+    print('✅ Switched to warehouse: $warehouseCode');
+  }
+
   /// Check if initialized
   static bool get isInitialized => _initialized;
 

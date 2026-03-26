@@ -1415,7 +1415,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
         children: [
           buildButton(BasketMode.full, 'Full basket'),
           buildButton(BasketMode.filled, 'Filled'),
-          buildButton(BasketMode.empty, 'Empty'),
+          // buildButton(BasketMode.empty, 'Empty'),
         ],
       ),
     );

@@ -90,6 +90,7 @@ class BasketDetailModal extends StatelessWidget {
                     _buildDetailRow('Purchase Order', basketData.basketPurchaseOrder),
                     _buildDetailRow('Former Size', basketData.formerSize),
                     _buildDetailRow('Used Days', '${basketData.formerUsedDay} days'),
+                    _buildDetailRow('Location', basketData.bin),
                   ],
                 ),
               ),

@@ -300,20 +300,20 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
     try {
       // Determine binLocation based on action type
-      String binLocation = '';
-      if (_currentAction?.isProduction == true) {
-        binLocation = 'X'; // Production uses 'X'
-      } else if (_currentAction?.isTransit == true) {
-        // For transit, use the destination location
-        binLocation = _currentAction?.toLocation ?? '';
-      } else {
-        // For exit or other actions
-        binLocation = 'EXIT';
-      }
+      // String binLocation = '';
+      // if (_currentAction?.isProduction == true) {
+      //   binLocation = 'X'; // Production uses 'X'
+      // } else if (_currentAction?.isTransit == true) {
+      //   // For transit, use the destination location
+      //   binLocation = _currentAction?.toLocation ?? '';
+      // } else {
+      //   // For exit or other actions
+      //   binLocation = 'EXIT';
+      // }
 
       final baskets = await ApiService.getBasketsStockOutBatch(
           batchIds,
-          binLocation: binLocation,
+          binLocation: 'X',
           warehouse: _warehouseCode
       );
 
