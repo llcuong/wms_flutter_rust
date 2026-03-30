@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import '../../config/constants/app_colors.dart';
 
-enum StockOutAction {
+enum StockInAction {
   production,
   transit,
   exit,
+  emptyBasket, // NEW
 }
 
 enum TransitDirection {
@@ -54,49 +55,39 @@ class TransitSelection {
   }
 }
 
-class StockOutActionResult {
-  final StockOutAction action;
+class StockInActionResult {
+  final StockInAction action;
   final TransitSelection? transitSelection;
 
-  StockOutActionResult({
+  StockInActionResult({
     required this.action,
     this.transitSelection,
   });
 
-  bool get isTransit => action == StockOutAction.transit;
-  bool get isProduction => action == StockOutAction.production;
-  bool get isExit => action == StockOutAction.exit;
+  bool get isTransit => action == StockInAction.transit;
+  bool get isEmptyBasket => action == StockInAction.emptyBasket;
 
   String get displayText {
-    if (action == StockOutAction.transit && transitSelection != null) {
+    if (action == StockInAction.transit && transitSelection != null) {
       return 'Transit: ${transitSelection!.displayName}';
     }
+
+    if (action == StockInAction.emptyBasket) {
+      return 'Empty Basket';
+    }
+
     return action.displayName;
-  }
-
-  String get fromLocation {
-    if (action == StockOutAction.transit && transitSelection != null) {
-      return transitSelection!.from;
-    }
-    return '';
-  }
-
-  String get toLocation {
-    if (action == StockOutAction.transit && transitSelection != null) {
-      return transitSelection!.to;
-    }
-    return '';
   }
 }
 
-class StockOutActionModal extends StatelessWidget {
-  const StockOutActionModal({Key? key}) : super(key: key);
+class StockInActionModal extends StatelessWidget {
+  const StockInActionModal({Key? key}) : super(key: key);
 
-  static Future<StockOutActionResult?> show(BuildContext context) {
-    return showDialog<StockOutActionResult>(
+  static Future<StockInActionResult?> show(BuildContext context) {
+    return showDialog<StockInActionResult>(
       context: context,
       barrierDismissible: true,
-      builder: (context) => const StockOutActionModal(),
+      builder: (context) => const StockInActionModal(),
     );
   }
 
@@ -166,26 +157,34 @@ class StockOutActionModal extends StatelessWidget {
                 children: [
                   _buildActionButton(
                     context,
-                    action: StockOutAction.production,
+                    action: StockInAction.production,
                     icon: Icons.precision_manufacturing,
                     label: 'Production',
-                    color: StockOutAction.production.color,
+                    color: StockInAction.production.color,
                   ),
                   const SizedBox(height: 12),
                   _buildActionButton(
                     context,
-                    action: StockOutAction.transit,
+                    action: StockInAction.transit,
                     icon: Icons.swap_horiz,
                     label: 'Transit',
-                    color: StockOutAction.transit.color,
+                    color: StockInAction.transit.color,
                   ),
                   const SizedBox(height: 12),
                   _buildActionButton(
                     context,
-                    action: StockOutAction.exit,
+                    action: StockInAction.emptyBasket,
+                    icon: Icons.inventory_2_outlined,
+                    label: 'Empty Basket',
+                    color: const Color(0xFFF59E0B),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildActionButton(
+                    context,
+                    action: StockInAction.exit,
                     icon: Icons.exit_to_app,
                     label: 'Exit',
-                    color: StockOutAction.exit.color,
+                    color: StockInAction.exit.color,
                   ),
                 ],
               ),
@@ -198,7 +197,7 @@ class StockOutActionModal extends StatelessWidget {
 
   Widget _buildActionButton(
       BuildContext context, {
-        required StockOutAction action,
+        required StockInAction action,
         required IconData icon,
         required String label,
         required Color color,
@@ -208,22 +207,24 @@ class StockOutActionModal extends StatelessWidget {
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         onTap: () async {
-          if (action == StockOutAction.transit) {
-            // Show transit modal first
-            final transitSelection = await showTransitModal(context);
+          if (action == StockInAction.transit) {
+            final transitSelection = await StockInActionModal.showTransitModal(context);
+
             if (transitSelection != null && context.mounted) {
-              // Return the action with transit selection
-              Navigator.of(context).pop(StockOutActionResult(
-                action: action,
-                transitSelection: transitSelection,
-              ));
+              Navigator.of(context).pop(
+                StockInActionResult(
+                  action: action,
+                  transitSelection: transitSelection,
+                ),
+              );
             }
-            // If user closes transit modal without selection, don't return anything
           } else {
-            Navigator.of(context).pop(StockOutActionResult(
-              action: action,
-              transitSelection: null,
-            ));
+            Navigator.of(context).pop(
+              StockInActionResult(
+                action: action,
+                transitSelection: null,
+              ),
+            );
           }
         },
         borderRadius: BorderRadius.circular(16),
@@ -294,7 +295,7 @@ class _TransitModal extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
                   const Text(
-                    'Transit Direction',
+                    'Warehouse Selection',
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
@@ -313,20 +314,18 @@ class _TransitModal extends StatelessWidget {
                   _buildTransitButton(
                     context,
                     direction: TransitDirection.gdToLk,
-                    from: 'GD',
-                    to: 'LK',
+                    warehouse: 'LK',
                     icon: Icons.arrow_forward,
-                    description: 'Transfer from GD warehouse to LK warehouse',
+                    description: 'Stockin formers from LK warehouse',
                     color: const Color(0xFF3B82F6), // Blue
                   ),
                   const SizedBox(height: 12),
                   _buildTransitButton(
                     context,
                     direction: TransitDirection.lkToGd,
-                    from: 'LK',
-                    to: 'GD',
-                    icon: Icons.arrow_back,
-                    description: 'Transfer from LK warehouse to GD warehouse',
+                    warehouse: 'GD',
+                    icon: Icons.arrow_forward,
+                    description: 'Stockin formers from GD warehouse',
                     color: const Color(0xFF10B981), // Green
                   ),
                   const SizedBox(height: 12),
@@ -343,8 +342,7 @@ class _TransitModal extends StatelessWidget {
   Widget _buildTransitButton(
       BuildContext context, {
         required TransitDirection direction,
-        required String from,
-        required String to,
+        required String warehouse,
         required IconData icon,
         required String description,
         required Color color,
@@ -375,7 +373,7 @@ class _TransitModal extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '$from → $to',
+                      warehouse,
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
@@ -453,47 +451,55 @@ class _TransitModal extends StatelessWidget {
   }
 }
 
-extension StockOutActionExtension on StockOutAction {
+extension StockInActionExtension on StockInAction {
   String get displayName {
     switch (this) {
-      case StockOutAction.production:
+      case StockInAction.production:
         return 'Production';
-      case StockOutAction.transit:
+      case StockInAction.transit:
         return 'Transit';
-      case StockOutAction.exit:
+      case StockInAction.exit:
         return 'Exit';
+      case StockInAction.emptyBasket:
+        return 'Empty Basket';
     }
   }
 
   String get code {
     switch (this) {
-      case StockOutAction.production:
+      case StockInAction.production:
         return 'Prod';
-      case StockOutAction.transit:
+      case StockInAction.transit:
         return 'Tran';
-      case StockOutAction.exit:
+      case StockInAction.exit:
         return 'Exit';
+      case StockInAction.emptyBasket:
+        return 'Empt';
     }
   }
 
   IconData get icon {
     switch (this) {
-      case StockOutAction.production:
+      case StockInAction.production:
         return Icons.precision_manufacturing;
-      case StockOutAction.transit:
+      case StockInAction.transit:
         return Icons.swap_horiz;
-      case StockOutAction.exit:
+      case StockInAction.emptyBasket:
+        return Icons.inventory_2_outlined;
+      case StockInAction.exit:
         return Icons.exit_to_app;
     }
   }
 
   Color get color {
     switch (this) {
-      case StockOutAction.production:
+      case StockInAction.production:
         return const Color(0xFF2563EB);
-      case StockOutAction.transit:
+      case StockInAction.transit:
         return const Color(0xFF16A34A);
-      case StockOutAction.exit:
+      case StockInAction.emptyBasket:
+        return const Color(0xFFF59E0B);
+      case StockInAction.exit:
         return const Color(0xFF64748B);
     }
   }

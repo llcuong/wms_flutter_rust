@@ -58,6 +58,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   bool _isLoadingMachines = false;
   bool _isLoadingForms = false;
   bool _isLoadingBins = false;
+  bool _isWarningShowing = false;
+  bool _shouldStopProcessing = false;
 
   // RFID Scanner
   final RfidScanner _rfidScanner = RfidScanner();
@@ -99,7 +101,12 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   @override
   void initState() {
     super.initState();
-    _showActionModal();
+    _initializeRfid();
+
+    // Show action modal after initial setup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showActionModal();
+    });
   }
 
   @override
@@ -157,7 +164,6 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
     await _loadBins();
 
-    await _initializeRfid();
     await _restoreRackCache();
   }
 
@@ -378,8 +384,21 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     }
   }
 
+  Future<void> _updatePowerLevel(double power) async {
+    setState(() => rfidPower = power);
+    try {
+      final level = _convertPowerToLevel(power);
+      await _rfidScanner.setPower(level);
+    } catch (e) {
+      _showError('Power Update Failed', e.toString());
+    }
+  }
+
   void _handleTagScanned(TagData tagData) async {
+    // Don't process new tags if we're showing a warning or should stop
     if (!_isScanTabActive) return;
+    if (_shouldStopProcessing) return;
+    if (_isWarningShowing) return;
 
     if (_basketMode == BasketMode.filled && _singleTagCaptured) return;
 
@@ -445,8 +464,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
   }
 
   void _processBatchQueue() {
+    // Don't process if we're already showing a warning or should stop
     if (_isFetchingBatch) return;
     if (_unfetchedTags.isEmpty) return;
+    if (_shouldStopProcessing) return;
 
     _isFetchingBatch = true;
     _fetchAndProcessBatch();
@@ -456,6 +477,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     if (_basketMode == BasketMode.filled) {
       _singleTagCaptured = false;
     }
+
     try {
       // Get up to _batchSize tags from the queue
       final batchTags = <String>[];
@@ -467,6 +489,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
         _isFetchingBatch = false;
         return;
       }
+
       List<BasketData> batchData = [];
       // Fetch batch data from API
       if (_selectedAction?.action == StockOutAction.production) {
@@ -479,20 +502,40 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
         batchData = await ApiService.getBasketsStockOutBatch(batchTags, warehouse: _warehouseCode);
       }
 
+      // Check if we should still process (warning might have been shown already)
+      if (_shouldStopProcessing) {
+        _isFetchingBatch = false;
+        return;
+      }
+
       final validBaskets = WarehouseValidator.validateAndFilter(
         batchData,
         _warehouseCode,
         context,
         originalTagIds: batchTags,
+        requiredBinLocation: _selectedBin,
         onInvalidFound: () {
-          // Stop scanning immediately when invalid tags found
-          _rfidScanner.stopScan();
-          setState(() {
-            isScanning = false;
-            scannerStatus = ScannerStatus.stopped;
-          });
+          // Only stop scanning and show warning once
+          if (!_isWarningShowing && !_shouldStopProcessing) {
+            _isWarningShowing = true;
+            _shouldStopProcessing = true;
+
+            // Stop scanning immediately
+            _rfidScanner.stopScan();
+
+            setState(() {
+              isScanning = false;
+              scannerStatus = ScannerStatus.stopped;
+            });
+          }
         },
       );
+
+      // If warning is already showing, don't process any more data
+      if (_shouldStopProcessing) {
+        _isFetchingBatch = false;
+        return;
+      }
 
       // If invalid baskets found, validBaskets will be empty, so don't process anything
       if (validBaskets.isEmpty) {
@@ -525,13 +568,16 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     } catch (e) {
       print('Error fetching batch basket data: $e');
 
-      // Mark all tags in this batch as error
-      for (final tagId in _unfetchedTags.take(_batchSize)) {
-        final existingItem = _scannedItemsMap[tagId];
-        if (existingItem != null) {
-          existingItem.status = ItemStatus.error;
-          existingItem.quantity = 0;
-          existingItem.errorMessage = 'Failed to fetch data';
+      // Don't mark as error if we're already stopping
+      if (!_shouldStopProcessing) {
+        // Mark all tags in this batch as error
+        for (final tagId in _unfetchedTags.take(_batchSize)) {
+          final existingItem = _scannedItemsMap[tagId];
+          if (existingItem != null) {
+            existingItem.status = ItemStatus.error;
+            existingItem.quantity = 0;
+            existingItem.errorMessage = 'Failed to fetch data';
+          }
         }
       }
 
@@ -539,8 +585,8 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
     } finally {
       _isFetchingBatch = false;
 
-      // Continue processing if there are more tags
-      if (_unfetchedTags.isNotEmpty) {
+      // Only continue processing if we're not stopping and there are more tags
+      if (!_shouldStopProcessing && _unfetchedTags.isNotEmpty) {
         _processBatchQueue();
       }
     }
@@ -633,13 +679,35 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
     if (confirm == true) {
       try {
+        // 1. Clear the RFID scanner's seen tags cache
         await _rfidScanner.clearSeenTags();
+
+        // 2. Reset validation flags to allow new scans
+        _isWarningShowing = false;
+        _shouldStopProcessing = false;
+
+        // 3. Clear all data structures
         setState(() {
           _scannedItemsMap.clear();
-          _unfetchedTags.clear();
+          _unfetchedTags.clear(); // Clear the pending batch queue
           _totalBaskets = 0;
           _totalFormers = 0;
         });
+
+        // 4. If scanning was in progress, restart it to ensure fresh scan
+        if (isScanning) {
+          await _stopScanning();
+          // Small delay to ensure stop completes
+          await Future.delayed(const Duration(milliseconds: 100));
+          await _startScanning();
+        }
+
+        // 5. Show success message
+        AppModal.showSuccess(
+          context: context,
+          title: 'Cleared',
+          message: 'All scanned items have been cleared. You can now scan new tags.',
+        );
       } catch (e) {
         _showError('Clear Failed', e.toString());
       }
@@ -765,7 +833,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        _selectedAction!.action.displayName,
+                        _selectedAction!.action.code,
                         style: TextStyle(
                           color: _selectedAction!.action.color,
                           fontSize: 13,
@@ -1714,9 +1782,10 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                         color: AppColors.textTertiary,
                       ),
                       onPressed: () {
-                        setState(
-                          () => rfidPower = (rfidPower - 1).clamp(0, 50),
-                        );
+                        setState(() {
+                          rfidPower = (rfidPower - 1).clamp(0, 50);
+                        });
+                        _updatePowerLevel(rfidPower);
                       },
                     ),
                     Expanded(
@@ -1740,7 +1809,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                           min: 0,
                           max: 50,
                           onChanged: (value) =>
-                              setState(() => rfidPower = value),
+                              _updatePowerLevel(value),
                         ),
                       ),
                     ),
@@ -2072,7 +2141,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
 
                         if (_selectedAction!.isProduction) {
                           // ── Production ──────────────────────────────────────────
-                          if (_selectedStockoutForm == null) {
+                          if (_stockFormController.text == '') {
                             AppModal.showWarning(
                               context: context,
                               title: 'Missing Information',
@@ -2088,7 +2157,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
-                          availableForm = _selectedStockoutForm!.stockoutForm;
+                          availableForm = _stockFormController.text;
                           if (availableForm.isEmpty) {
                             AppModal.showWarning(
                               context: context,
@@ -2098,7 +2167,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             );
                             return;
                           }
-                          formerSize = _selectedStockoutForm!.formerSize ?? '';
+                          formerSize = _selectedStockoutForm?.formerSize ?? '';
                           stockoutFrom =
                               ''; // production has no "from" location
                           stockoutTo =
@@ -2205,7 +2274,7 @@ class _FormerStockOutScreenState extends State<FormerStockOutScreen>
                             title: 'Success',
                             message:
                                 'Stock Out saved successfully!\n\n'
-                                'Batch: ${response.batchNo}\n'
+                                'Stock out to: $_selectedMachine\n'
                                 'Baskets: ${response.totalBaskets}\n'
                                 'Formers: ${response.totalFormers}',
                           );

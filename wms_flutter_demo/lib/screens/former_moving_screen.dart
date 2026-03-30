@@ -250,6 +250,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
         _warehouseCode,
         context,
         originalTagIds: batchIds,
+        excludedBinLocations: ['X'],
         onInvalidFound: () {
           // Stop scanning immediately when invalid tags found
           _rfidScanner.stopScan();
@@ -682,7 +683,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // _buildFormSelector(),
-                  const SizedBox(height: 24),
+                  // const SizedBox(height: 24),
                   _buildBasketModeSelector(),
                   const SizedBox(height: 24),
                   _buildStatsCards(),
@@ -1080,7 +1081,7 @@ class _FormerMovingScreenState extends State<FormerMovingScreen> {
         children: [
           buildButton(BasketMode.full, 'Full basket'),
           buildButton(BasketMode.filled, 'Filled'),
-          buildButton(BasketMode.empty, 'Empty'),
+          // buildButton(BasketMode.empty, 'Empty'),
         ],
       ),
     );

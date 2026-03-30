@@ -36,7 +36,7 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
           : null,
       title: Row(
         children: [
-          const Icon(Icons.inventory_2_outlined, color: AppColors.primary),
+          const Icon(Icons.warehouse_rounded, color: AppColors.primary, size: 30,),
           const SizedBox(width: 8),
           Text(
             title,

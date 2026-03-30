@@ -86,7 +86,12 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
   void initState() {
     super.initState();
     _keyboardFocusNode.requestFocus();
-    _showSourceSelectionModal();
+    _initializeRfid();
+
+    // Show action modal after initial setup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showSourceSelectionModal();
+    });
   }
 
   Future<void> _showSourceSelectionModal() async {
@@ -117,7 +122,6 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
     }
 
     await _loadBins();
-    await _initializeRfid();
     await _restoreRackCache();
   }
 
@@ -376,6 +380,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
         _warehouseCode,
         context,
         originalTagIds: batchIds,
+        excludedBinLocations: ['X'],
         onInvalidFound: () {
           // Stop scanning immediately when invalid tags found
           _rfidScanner.stopScan();
@@ -1485,7 +1490,7 @@ class _FormerCleaningScreenState extends State<FormerCleaningScreen> {
         children: [
           buildButton(BasketMode.full, 'Full basket'),
           buildButton(BasketMode.filled, 'Filled'),
-          buildButton(BasketMode.empty, 'Empty'),
+          // buildButton(BasketMode.empty, 'Empty'),
         ],
       ),
     );

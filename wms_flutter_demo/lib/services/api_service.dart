@@ -135,6 +135,7 @@ class BasketData {
   final String formerSize;
   final String formerUsedDay;
   final String bin;
+  final int basketFormerQty;
 
   BasketData({
     this.tagId = '',
@@ -147,6 +148,7 @@ class BasketData {
     required this.formerSize,
     required this.formerUsedDay,
     required this.bin,
+    required this.basketFormerQty,
   });
 
   Map<String, dynamic> toJson() => {
@@ -159,6 +161,7 @@ class BasketData {
     'formerSize': formerSize,
     'formerUsedDay': formerUsedDay,
     'bin': bin,
+    'basketFormerQty': basketFormerQty,
   };
 
   factory BasketData.fromJson(Map<String, dynamic> json) {
@@ -173,6 +176,9 @@ class BasketData {
       formerSize: json['former_size'] ?? '',
       formerUsedDay: json['former_used_day'] ?? 0,
       bin: json['bin'] ?? '',
+      basketFormerQty: (json['basket_former_qty'] ?? 0) is String
+          ? int.tryParse(json['basket_former_qty'] ?? '0') ?? 0
+          : json['basket_former_qty'] ?? 0,
     );
   }
 }
@@ -747,11 +753,19 @@ class ApiService {
   static Future<List<StockoutFormData>> getStockoutForms(
       String machine, {
         String? line,
+        String? type,
+        String? stockOutDate,
       }) async {
     try {
       String queryString = 'machine=$machine';
       if (line != null && line.isNotEmpty) {
         queryString += '&line=$line';
+      }
+      if (type != null && type.isNotEmpty) {
+        queryString += '&type=$type';
+      }
+      if (stockOutDate != null && stockOutDate.isNotEmpty) {
+        queryString += '&stock_out_date=$stockOutDate';
       }
 
       final response = await dio.get('/wh_former/stockout_forms?$queryString');

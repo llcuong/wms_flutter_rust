@@ -33,10 +33,10 @@ class AppScaffold extends StatelessWidget {
       ),
       drawer: showDrawer ? const CustomDrawer() : null,
       body: body,
-      bottomNavigationBar: showBottomNav
-          ? CustomBottomNav(currentIndex: currentNavIndex)
-          : null,
-      floatingActionButton: floatingActionButton,
+      // bottomNavigationBar: showBottomNav
+      //     ? CustomBottomNav(currentIndex: currentNavIndex)
+      //     : null,
+      // floatingActionButton: floatingActionButton,
     );
   }
 }

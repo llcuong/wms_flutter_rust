@@ -65,6 +65,8 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
   final Map<String, TagData> _pendingTags = {};
   Timer? _batchTimer;
   bool _isProcessingBatch = false;
+  bool _isWarningShowing = false;
+  bool _shouldStopProcessing = false;
 
   final FocusNode _keyboardFocusNode = FocusNode();
 
@@ -191,7 +193,10 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
   }
 
   void _handleTagScanned(TagData tagData) {
+    // Don't process new tags if we're showing a warning or should stop
     if (_basketMode == BasketMode.filled && _singleTagCaptured) return;
+    if (_shouldStopProcessing) return;
+    if (_isWarningShowing) return;
 
     final tagId = tagData.tagId;
 
@@ -209,11 +214,6 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
       return;
     }
 
-    // if (_basketMode == BasketMode.filled) {
-    //   _handleSingleFilledScan(tagData);
-    //   return;
-    // }
-
     // Add to batch queue
     _pendingTags[tagId] = tagData;
     _resetBatchTimer();
@@ -226,6 +226,8 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
 
   Future<void> _processBatchQueue() async {
     if (_pendingTags.isEmpty || _isProcessingBatch) return;
+    if (_shouldStopProcessing) return;
+    if (_isWarningShowing) return;
 
     _isProcessingBatch = true;
     final batchMap = Map<String, TagData>.from(_pendingTags);
@@ -237,20 +239,41 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
 
       if (!mounted) return;
 
+      // Check if we should still process (warning might have been shown already)
+      if (_shouldStopProcessing) {
+        _isProcessingBatch = false;
+        return;
+      }
+
       final validBaskets = WarehouseValidator.validateAndFilter(
         baskets,
         _warehouseCode,
         context,
         originalTagIds: batchIds,
         onInvalidFound: () {
-          // Stop scanning immediately when invalid tags found
-          _rfidScanner.stopScan();
-          setState(() {
-            isScanning = false;
-            scannerStatus = ScannerStatus.stopped;
-          });
+          // Only stop scanning and show warning once
+          if (!_isWarningShowing && !_shouldStopProcessing) {
+            _isWarningShowing = true;
+            _shouldStopProcessing = true;
+
+            // Stop scanning immediately
+            _rfidScanner.stopScan();
+
+            if (mounted) {
+              setState(() {
+                isScanning = false;
+                scannerStatus = ScannerStatus.stopped;
+              });
+            }
+          }
         },
       );
+
+      // If warning is already showing, don't process any more data
+      if (_shouldStopProcessing) {
+        _isProcessingBatch = false;
+        return;
+      }
 
       // If invalid baskets found, validBaskets will be empty, so don't process anything
       if (validBaskets.isEmpty) {
@@ -280,10 +303,10 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
       });
     } catch (e) {
       print('Batch processing error: $e');
-      // Optional: re-queue or handle error items
     } finally {
       _isProcessingBatch = false;
-      if (_pendingTags.isNotEmpty) {
+      // Only continue processing if we're not stopping and there are more tags
+      if (!_shouldStopProcessing && _pendingTags.isNotEmpty) {
         _resetBatchTimer();
       }
     }
@@ -430,8 +453,28 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
 
     if (confirm == true) {
       try {
+        // Reset warning flags
+        _isWarningShowing = false;
+        _shouldStopProcessing = false;
+
+        // Clear RFID scanner cache
         await _rfidScanner.clearSeenTags();
-        setState(() => _scannedItemsMap.clear());
+
+        // Clear all data structures
+        setState(() {
+          _scannedItemsMap.clear();
+          _pendingTags.clear();
+          _racks.clear();
+          _allRackTagIds.clear();
+        });
+
+        // If scanning was in progress, restart it
+        if (isScanning) {
+          await _stopScanning();
+          await Future.delayed(const Duration(milliseconds: 100));
+          await _startScanning();
+        }
+
         AppModal.showSuccess(
           context: context,
           title: 'Cleared',
@@ -2020,13 +2063,17 @@ class _EmptyFormerStockInScreenState extends State<EmptyFormerStockInScreen> {
                   if (mounted) AppModal.hideLoading(context);
 
                   if (response.success) {
-                    _saveRackCache();
+                    _isWarningShowing = false;
+                    _shouldStopProcessing = false;
+                    _singleTagCaptured = false;
 
                     setState(() {
                       _racks.clear();
                       _allRackTagIds.clear();
                       _scannedItemsMap.clear();
                     });
+
+                    _saveRackCache();
 
                     AppModal.showSuccess(
                       context: context,

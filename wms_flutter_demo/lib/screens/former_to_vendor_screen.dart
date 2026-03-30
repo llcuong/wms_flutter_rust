@@ -12,6 +12,7 @@ import '../components/common/basket_detail_modal.dart';
 import '../components/common/rack_detail_modal.dart';
 import '../components/common/filled_basket_qty_modal.dart';
 import '../components/common/rfid_scanned_items_modal.dart';
+import '../helpers/warehouse_validator.dart';
 import '../services/rfid_scanner.dart';
 import '../services/api_service.dart';
 import '../models/scanned_item.dart';
@@ -85,7 +86,12 @@ class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
   void initState() {
     super.initState();
     _keyboardFocusNode.requestFocus();
-    _showSourceSelectionModal();
+    _initializeRfid();
+
+    // Show action modal after initial setup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showSourceSelectionModal();
+    });
   }
 
   Future<void> _showSourceSelectionModal() async {
@@ -116,7 +122,6 @@ class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
     }
 
     await _loadBins();
-    await _initializeRfid();
     await _restoreRackCache();
   }
 
@@ -369,6 +374,28 @@ class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
       }
 
       if (!mounted) return;
+
+      final validBaskets = WarehouseValidator.validateAndFilter(
+        baskets,
+        _warehouseCode,
+        context,
+        originalTagIds: batchIds,
+        excludedBinLocations: ['X'],
+        onInvalidFound: () {
+          // Stop scanning immediately when invalid tags found
+          _rfidScanner.stopScan();
+          setState(() {
+            isScanning = false;
+            scannerStatus = ScannerStatus.stopped;
+          });
+        },
+      );
+
+      // If invalid baskets found, validBaskets will be empty, so don't process anything
+      if (validBaskets.isEmpty) {
+        _isProcessingBatch = false;
+        return;
+      }
 
       setState(() {
         for (final basket in baskets) {
@@ -1428,7 +1455,7 @@ class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
         children: [
           buildButton(BasketMode.full, 'Full basket'),
           buildButton(BasketMode.filled, 'Filled'),
-          buildButton(BasketMode.empty, 'Empty'),
+          // buildButton(BasketMode.empty, 'Empty'),
         ],
       ),
     );
@@ -2011,7 +2038,7 @@ class _FormerToVendorScreenState extends State<FormerToVendorScreen> {
                 },
                 icon: const Icon(Icons.send, size: 20),
                 label: const Text(
-                  'SEND TO VENDOR',
+                  'Save all',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
                 style: ElevatedButton.styleFrom(

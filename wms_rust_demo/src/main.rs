@@ -295,7 +295,8 @@ async fn handle_stockin_batch_baskets(
             bmd.former_size,
             bmd.former_used_day,
             bmd.is_active,
-            bd.bin
+            bd.bin,
+            bd.basket_former_qty
         FROM {db}.[wh_former_basket_master_data] bmd
         JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
         WHERE bmd.basket_no IN ({in_clause})
@@ -303,8 +304,7 @@ async fn handle_stockin_batch_baskets(
             SELECT 1 
             FROM {db}.[wh_former_former_bin_data] fbd 
             WHERE fbd.basket_no = bmd.basket_no 
-            AND (fbd.bin LIKE '%NBR%' OR fbd.bin IN ('GD', 'LK'))
-            AND fbd.bin NOT IN ('X')
+            AND (fbd.bin LIKE '%NBR%' OR fbd.bin IN ('GD', 'LK', 'X'))
         )
         "#
     );
@@ -357,6 +357,9 @@ async fn handle_stockin_batch_baskets(
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
                         bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
+                        basket_former_qty: row
+                            .get::<i32, _>("basket_former_qty")
+                            .map(|v| v.to_string()),
                     };
                     data.push(basket);
                 }
@@ -433,6 +436,20 @@ async fn handle_stockout_batch_baskets(
     let placeholders: Vec<String> = (1..=count).map(|i| format!("@P{}", i)).collect();
     let in_clause = placeholders.join(", ");
 
+    // Track parameter index for bin_location
+    // let bin_param_index = count + 1;
+
+    // Build bin condition if bin_location is provided
+    // let (_bin_condition, _has_bin_filter) = if let Some(bin_location) = &payload.bin_location {
+    //     if !bin_location.is_empty() {
+    //         (format!(" AND bd.bin = @P{}", bin_param_index), true)
+    //     } else {
+    //         (String::new(), false)
+    //     }
+    // } else {
+    //     (String::new(), false)
+    // };
+
     let query = format!(
         r#"
         SELECT DISTINCT
@@ -445,15 +462,16 @@ async fn handle_stockout_batch_baskets(
             bmd.former_used_day,
             bmd.basket_purchase_order,
             bmd.is_active,
-            bd.bin
+            bd.bin,
+            bd.basket_former_qty
         FROM {db}.[wh_former_basket_master_data] bmd
         JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
         WHERE bmd.basket_no IN ({in_clause})
+
         AND EXISTS (
             SELECT 1 
             FROM {db}.[wh_former_former_bin_data] fbd 
             WHERE fbd.basket_no = bmd.basket_no 
-            
         )
         "#
     );
@@ -470,6 +488,13 @@ async fn handle_stockout_batch_baskets(
     for tag_id in &payload.tag_ids {
         query_builder.bind(tag_id.as_str());
     }
+
+    // Bind bin_location if provided
+    // if let Some(bin_location) = &payload.bin_location {
+    //     if !bin_location.is_empty() {
+    //         query_builder.bind(bin_location.as_str());
+    //     }
+    // }
 
     // Execute query
     let results = match query_builder.query(&mut *conn).await {
@@ -493,7 +518,9 @@ async fn handle_stockout_batch_baskets(
                         basket_capacity: row
                             .get::<i32, _>("basket_capacity")
                             .map(|v| v.to_string()),
-                        basket_length: row.get::<&str, _>("basket_length").map(|s: &str| s.to_string()),
+                        basket_length: row
+                            .get::<&str, _>("basket_length")
+                            .map(|s: &str| s.to_string()),
                         basket_receive_date: row
                             .get::<NaiveDate, _>("basket_receive_date")
                             .map(|d| d.format("%Y-%m-%d").to_string()),
@@ -506,6 +533,9 @@ async fn handle_stockout_batch_baskets(
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
                         bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
+                        basket_former_qty: row
+                            .get::<i32, _>("basket_former_qty")
+                            .map(|v| v.to_string()),
                     };
                     data.push(basket);
                 }
@@ -609,6 +639,7 @@ struct BasketData {
     basket_purchase_order: Option<String>,
     status: Option<String>,
     bin: Option<String>,
+    basket_former_qty: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -679,7 +710,8 @@ async fn handle_batch_baskets(
             bmd.former_used_day,
             bmd.basket_purchase_order,
             bmd.is_active,
-            bd.bin
+            bd.bin,
+            bd.basket_former_qty
         FROM {db}.[wh_former_basket_master_data] bmd
         JOIN {db}.[wh_former_former_bin_data] bd ON bd.basket_no = bmd.basket_no
         WHERE bmd.basket_no IN ({in_clause})
@@ -732,6 +764,9 @@ async fn handle_batch_baskets(
                             .map(|s| s.to_string()),
                         status: Some(status_str.to_string()),
                         bin: row.get::<&str, _>("bin").map(|s| s.to_string()),
+                        basket_former_qty: row
+                            .get::<i32, _>("basket_former_qty")
+                            .map(|v| v.to_string()),
                     };
                     data.push(basket);
                 }
@@ -1317,11 +1352,15 @@ async fn handle_get_stockout_forms(
 ) -> impl IntoResponse {
     let machine = params.get("machine").map(|s| s.as_str()).unwrap_or("");
     let line = params.get("line").map(|s| s.as_str()).unwrap_or("");
+    let type_ = params.get("type").map(|s| s.as_str()).unwrap_or("");
+    let stock_out_date = params.get("stock_out_date").map(|s| s.as_str()).unwrap_or("");
 
     tracing::info!(
-        "📥 Fetching stockout forms for machine: {}, line: {}",
+        "📥 Fetching stockout forms for machine: {}, line: {}, type: {}, stock-out date: {}",
         machine,
-        line
+        line,
+        type_,
+        stock_out_date
     );
 
     if machine.is_empty() {
@@ -1352,6 +1391,12 @@ async fn handle_get_stockout_forms(
 
     let db = &state.db_prefix;
 
+    let date_condition = if !stock_out_date.is_empty() {
+        format!(" AND stockout_date = '{}' ", stock_out_date)
+    } else {
+        String::new()
+    };
+
     let mut query = format!(
         r#"
         SELECT TOP (4) [id]
@@ -1366,8 +1411,11 @@ async fn handle_get_stockout_forms(
             ,[most_batch_used_day]
         FROM {db}.[wh_former_former_stockout_form]
         WHERE stockout_to = @P1 AND is_confirmed = 0
+        {date_condition}
     "#
     );
+
+    print!("Constructed SQL Query: {}", query.replace("\n", " ").trim());
 
     if !line.is_empty() {
         query.push_str(" AND stockout_form LIKE @P2");
@@ -2404,7 +2452,7 @@ async fn handle_stockout_save(
                 most_batch_former_qty, most_batch_used_day, is_closed, is_confirmed
             )
             SELECT 
-                @P1, GETDATE(), @P2, 'LK', @P3, 
+                @P1, GETDATE(), @P2, @P9, @P3, 
                 @P4, b.former_size, @P5, @P6, 0, 0, @P7, @P8, 0, 0
             FROM {db}.[wh_former_former_batch_data] b
             WHERE b.batch_no = @P4
@@ -2415,14 +2463,15 @@ async fn handle_stockout_save(
             .execute(
                 insert_sql,
                 &[
-                    &payload.stockout_form, // P1
-                    &payload.action,        // P2
-                    &payload.stockout_from, // P3
-                    &batch_no,              // P4
-                    &total_baskets,         // P5
-                    &total_formers,         // P6
-                    &most_batch_former_qty, // P7
-                    &used_day,              // P8
+                    &payload.stockout_form,    // P1
+                    &payload.action,           // P2
+                    &payload.stockout_from,    // P3
+                    &batch_no,                 // P4
+                    &total_baskets,            // P5
+                    &total_formers,            // P6
+                    &most_batch_former_qty,    // P7
+                    &used_day,                 // P8
+                    &payload.selected_machine, // P9
                 ],
             )
             .await;
@@ -2914,6 +2963,93 @@ async fn handle_stockout_save(
                     batch_no
                 ),
                 Err(e) => tracing::error!("❌ dst batch_data upsert failed: {}", e),
+            }
+
+            // ── Step X: Sync stockout_form to DESTINATION ─────────────────────
+            let query_dst_stockout_form = format!(
+                r#"
+                MERGE {dst_db}.[wh_former_former_stockout_form] AS target
+                USING (SELECT @P1 AS stockout_form) AS source
+                ON (target.stockout_form = source.stockout_form)
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        stockout_date           = GETDATE(),
+                        stockout_action         = @P2,
+                        stockout_to             = @P3,
+                        stockout_from           = @P4,
+                        batch_no                = @P5,
+                        former_size             = @P6,
+                        stockout_total_basket   = target.stockout_total_basket + @P7,
+                        stockout_total_former   = target.stockout_total_former + @P8,
+                        most_batch_former_qty   = @P9,
+                        most_batch_used_day     = @P10,
+                        is_confirmed            = 0
+                WHEN NOT MATCHED THEN
+                    INSERT (
+                        stockout_form, stockout_date, stockout_action,
+                        stockout_to, stockout_from,
+                        batch_no, former_size,
+                        stockout_total_basket, stockout_total_former,
+                        stockout_return_basket, stockout_return_former,
+                        most_batch_former_qty, most_batch_used_day,
+                        is_closed, is_confirmed
+                    )
+                    VALUES (
+                        @P1, GETDATE(), @P2,
+                        @P3, @P4,
+                        @P5, @P6,
+                        @P7, @P8,
+                        0, 0,
+                        @P9, @P10,
+                        0, 0
+                    );
+                "#
+            );
+
+            let r = if to_lk {
+                lk_conn
+                    .execute(
+                        &query_dst_stockout_form,
+                        &[
+                            &payload.stockout_form,    // P1
+                            &payload.action,           // P2
+                            &payload.selected_machine, // P3 (to)
+                            &payload.stockout_from,    // P4
+                            &batch_no,                 // P5
+                            &payload.former_size,      // P6
+                            &total_baskets,            // P7
+                            &total_formers,            // P8
+                            &most_batch_former_qty,    // P9
+                            &used_day,                 // P10
+                        ],
+                    )
+                    .await
+            } else {
+                conn.execute(
+                    &query_dst_stockout_form,
+                    &[
+                        &payload.stockout_form,
+                        &payload.action,
+                        &payload.selected_machine,
+                        &payload.stockout_from,
+                        &batch_no,
+                        &payload.former_size,
+                        &total_baskets,
+                        &total_formers,
+                        &most_batch_former_qty,
+                        &used_day,
+                    ],
+                )
+                .await
+            };
+
+            match r {
+                Ok(rows) => tracing::info!(
+                    "✅ dst stockout_form synced: {} rows, form={}",
+                    rows.total(),
+                    payload.stockout_form
+                ),
+                Err(e) => tracing::error!("❌ dst stockout_form sync failed: {}", e),
             }
 
             // ── Step 3: batch_data_log on DESTINATION ─────────────────────

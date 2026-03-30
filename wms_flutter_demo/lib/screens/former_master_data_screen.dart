@@ -1296,7 +1296,7 @@ class _FormerMasterDataScreenState extends State<FormerMasterDataScreen>
         children: [
           buildButton(BasketMode.full, AppStrings.roDay),
           buildButton(BasketMode.filled, AppStrings.roChuaDay),
-          buildButton(BasketMode.empty, AppStrings.roRong),
+          // buildButton(BasketMode.empty, AppStrings.roRong),
         ],
       ),
     );

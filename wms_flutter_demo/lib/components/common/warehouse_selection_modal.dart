@@ -1,6 +1,7 @@
 // components/common/warehouse_selection_modal.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wms_flutter/components/common/stock_in_action_modal.dart';
 import '../../config/constants/app_colors.dart';
 import '../../services/server_config_service.dart';
 
@@ -132,6 +133,27 @@ class WarehouseSelectionModal extends StatelessWidget {
   static Future<void> clearSavedWarehouse() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_storageKey);
+  }
+
+  // Helper method to get all available warehouse codes
+  List<String> getAllWarehouseCodes() {
+    return ['GD', 'LK']; // You can also get this dynamically from the system
+  }
+
+// Helper method to get excluded bin locations based on selected warehouse and action
+  static Future<List<String>> getExcludedBinLocations() async {
+    final savedWarehouse = await WarehouseSelectionModal.getSavedWarehouse();
+    final selectedWarehouseCode = savedWarehouse?.shortName;
+
+    // Get all warehouse codes
+    final allWarehouseCodes = ['GD', 'LK']; // Add more if needed
+
+    // Start with all warehouses except the selected one
+    List<String> excluded = allWarehouseCodes
+        .where((code) => code != selectedWarehouseCode)
+        .toList();
+
+    return excluded;
   }
 
   @override

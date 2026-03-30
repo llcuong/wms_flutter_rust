@@ -69,6 +69,8 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   final Map<String, TagData> _pendingTags = {};
   Timer? _batchTimer;
   bool _isProcessingBatch = false;
+  bool _isWarningShowing = false;
+  bool _shouldStopProcessing = false;
 
   final FocusNode _keyboardFocusNode = FocusNode();
 
@@ -117,6 +119,11 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
   }
 
   Future<void> _changeAction() async {
+    // Reset flags when changing action
+    _isWarningShowing = false;
+    _shouldStopProcessing = false;
+    _singleTagCaptured = false;
+
     // Stop scanning if active
     if (isScanning) {
       await _stopScanning();
@@ -134,7 +141,16 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
           _generatedStockForm = null;
         }
       });
-      _singleTagCaptured = false;
+
+      // Clear all scanned items and pending tags
+      setState(() {
+        _scannedItemsMap.clear();
+        _pendingTags.clear();
+        _racks.clear();
+        _allRackTagIds.clear();
+      });
+
+      await _rfidScanner.clearSeenTags();
 
       AppModal.showSuccess(
         context: context,
@@ -263,6 +279,8 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
   void _handleTagScanned(TagData tagData) {
     if (_singleTagCaptured) return;
+    if (_shouldStopProcessing) return;
+    if (_isWarningShowing) return;
 
     final tagId = tagData.tagId;
 
@@ -292,6 +310,8 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
   Future<void> _processBatchQueue() async {
     if (_pendingTags.isEmpty || _isProcessingBatch) return;
+    if (_shouldStopProcessing) return;
+    if (_isWarningShowing) return;
 
     _isProcessingBatch = true;
     final batchMap = Map<String, TagData>.from(_pendingTags);
@@ -306,9 +326,6 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       // } else if (_currentAction?.isTransit == true) {
       //   // For transit, use the destination location
       //   binLocation = _currentAction?.toLocation ?? '';
-      // } else {
-      //   // For exit or other actions
-      //   binLocation = 'EXIT';
       // }
 
       final baskets = await ApiService.getBasketsStockOutBatch(
@@ -319,23 +336,42 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
       if (!mounted) return;
 
+      if (_shouldStopProcessing) {
+        _isProcessingBatch = false;
+        return;
+      }
+
       final validBaskets = WarehouseValidator.validateAndFilter(
         baskets,
         _warehouseCode,
         context,
         originalTagIds: batchIds,
+        requiredBinLocation: 'X',
         onInvalidFound: () {
-          // Stop scanning immediately when invalid tags found
-          _rfidScanner.stopScan();
-          setState(() {
-            isScanning = false;
-            scannerStatus = ScannerStatus.stopped;
-          });
+          if (!_isWarningShowing && !_shouldStopProcessing) {
+            _isWarningShowing = true;
+            _shouldStopProcessing = true;
+
+            // Stop scanning immediately
+            _rfidScanner.stopScan();
+
+            if (mounted) {
+              setState(() {
+                isScanning = false;
+                scannerStatus = ScannerStatus.stopped;
+              });
+            }
+          }
         },
       );
 
       // If invalid baskets found, validBaskets will be empty, so don't process anything
       if (validBaskets.isEmpty) {
+        _isProcessingBatch = false;
+        return;
+      }
+
+      if (_shouldStopProcessing) {
         _isProcessingBatch = false;
         return;
       }
@@ -362,7 +398,7 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
           _scannedItemsMap[tagId] = ScannedItem(
             id: tagId,
-            quantity: quantity,
+            quantity: 0,
             vendor: basket.basketVendor,
             bin: bin,
             status: ItemStatus.success,
@@ -473,8 +509,28 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
 
     if (confirm == true) {
       try {
+        // Reset validation flags
+        _isWarningShowing = false;
+        _shouldStopProcessing = false;
+
+        // Clear RFID scanner cache
         await _rfidScanner.clearSeenTags();
-        setState(() => _scannedItemsMap.clear());
+
+        // Clear all data structures
+        setState(() {
+          _scannedItemsMap.clear();
+          _pendingTags.clear();
+          _racks.clear();
+          _allRackTagIds.clear();
+        });
+
+        // If scanning was in progress, restart it
+        if (isScanning) {
+          await _stopScanning();
+          await Future.delayed(const Duration(milliseconds: 100));
+          await _startScanning();
+        }
+
         AppModal.showSuccess(
           context: context,
           title: 'Cleared',
@@ -494,16 +550,29 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
     );
 
     if (confirm == true) {
+      // Reset all flags
+      _isWarningShowing = false;
+      _shouldStopProcessing = false;
+      _singleTagCaptured = false;
+
       setState(() {
         _currentAction = null;
         _hasSelectedAction = false;
         _transitSelection = null;
         _generatedStockForm = null;
         _scannedItemsMap.clear();
+        _pendingTags.clear();
         _racks.clear();
         _allRackTagIds.clear();
       });
+
       await _rfidScanner.clearSeenTags();
+
+      // Stop scanning if active
+      if (isScanning) {
+        await _stopScanning();
+      }
+
       AppModal.showSuccess(
         context: context,
         title: 'Reset',
@@ -793,13 +862,17 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       if (mounted) AppModal.hideLoading(context);
 
       if (response.success) {
-        await _saveRackCache();
+        _isWarningShowing = false;
+        _shouldStopProcessing = false;
+        _singleTagCaptured = false;
 
         setState(() {
           _racks.clear();
           _allRackTagIds.clear();
           _scannedItemsMap.clear();
         });
+
+        await _saveRackCache();
 
         AppModal.showSuccess(
           context: context,
@@ -874,13 +947,17 @@ class _EmptyFormerStockOutScreenState extends State<EmptyFormerStockOutScreen> {
       if (mounted) AppModal.hideLoading(context);
 
       if (response.success) {
-        await _saveRackCache();
+        _isWarningShowing = false;
+        _shouldStopProcessing = false;
+        _singleTagCaptured = false;
 
         setState(() {
           _racks.clear();
           _allRackTagIds.clear();
           _scannedItemsMap.clear();
         });
+
+        await _saveRackCache();
 
         AppModal.showSuccess(
           context: context,
